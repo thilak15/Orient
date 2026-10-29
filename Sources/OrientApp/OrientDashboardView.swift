@@ -27,12 +27,13 @@ public struct OrientDashboardView: View {
                 }
                 .frame(minWidth: 330, idealWidth: 355, maxWidth: 400)
 
-                // Right Panel: 2D Target Benchmark Pad & Tuning Studio
+                // Right Panel: 3D Spatial Lab, 2D Target Benchmark Pad & Tuning Studio
                 VStack(spacing: 12) {
                     Picker("Workspace", selection: $selectedTab) {
-                        Text("🎯 2D Target & Latency Pad").tag(0)
-                        Text("⚡ Sensitivity, Edge Pan & 1-Euro Filter").tag(1)
-                        Text("🖱️ Click Gestures & Aim-Freeze").tag(2)
+                        Text("🧊 3D Spatial & 6-DOF Lab").tag(0)
+                        Text("🎯 2D Target & Latency Pad").tag(1)
+                        Text("⚡ Sensitivity, Edge Pan & 1-Euro Filter").tag(2)
+                        Text("🖱️ Click Gestures & Aim-Freeze").tag(3)
                     }
                     .pickerStyle(.segmented)
                     .padding(.horizontal, 16)
@@ -41,8 +42,10 @@ public struct OrientDashboardView: View {
                     Group {
                         switch selectedTab {
                         case 0:
-                            TargetBenchmarkView(controller: controller)
+                            Spatial3DLabView(controller: controller)
                         case 1:
+                            TargetBenchmarkView(controller: controller)
+                        case 2:
                             sensitivityAndFilterTab
                         default:
                             gesturesAndAimFreezeTab
@@ -68,7 +71,7 @@ public struct OrientDashboardView: View {
                         .foregroundStyle(.cyan)
                     Text("ORIENT")
                         .font(.system(size: 19, weight: .black, design: .rounded))
-                    Text("PHASE 1 • AIRPODS LOW-LATENCY CURSOR LAB")
+                    Text("PHASE 2 • 3D 6-DOF DISAMBIGUATION & CURSOR LAB")
                         .font(.system(size: 11, weight: .bold, design: .monospaced))
                         .padding(.horizontal, 7)
                         .padding(.vertical, 2)

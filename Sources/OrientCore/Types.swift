@@ -150,6 +150,19 @@ public struct IMUSample: Sendable, Equatable {
         self.userAcceleration = userAcceleration
         self.gravity = gravity
     }
+
+    /// Converts CoreMotion `rotationRate` (rad/s) into ergonomic head angular velocities (deg/s):
+    /// - yawRateDegPerSec: positive = turning right (-rotationRate.z)
+    /// - pitchRateDegPerSec: positive = nodding up (+rotationRate.x)
+    /// - rollRateDegPerSec: positive = tilting right ear to shoulder (+rotationRate.y)
+    public var ergonomicRatesDegPerSec: (yawRate: Double, pitchRate: Double, rollRate: Double) {
+        let rad2deg = 180.0 / Double.pi
+        return (
+            yawRate: -rotationRate.z * rad2deg,
+            pitchRate: rotationRate.x * rad2deg,
+            rollRate: rotationRate.y * rad2deg
+        )
+    }
 }
 
 public enum GestureAction: String, CaseIterable, Sendable, Codable, Identifiable {
@@ -202,6 +215,10 @@ public struct OrientConfiguration: Sendable, Equatable, Codable {
     // Safety & Audio Keep-Alive
     public var safetyCutoffAngleDeg: Double = 75.0
     public var silentAudioKeepAliveEnabled: Bool = true
+
+    // Phase 2: 6-DOF Disambiguation & Anatomical Cross-Axis Decoupling
+    public var decouplingMatrix: DecouplingMatrix = .identity
+    public var leverArmRadiusMeters: Double = 0.085
 
     public init() {}
 }

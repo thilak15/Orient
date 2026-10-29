@@ -85,6 +85,8 @@ private final class BackgroundCursorWorker: @unchecked Sendable {
 
     var isTrackingActive: Bool = false
     var isSimulatorEnabled: Bool = false
+    var isRecordingRollCalibration: Bool = false
+    var recordedRollSamples: [IMUSample] = []
 
     private var timer120Hz: DispatchSourceTimer?
     private var frameCounter: Int = 0
@@ -102,6 +104,19 @@ private final class BackgroundCursorWorker: @unchecked Sendable {
             timer.resume()
             self.timer120Hz = timer
         }
+    }
+
+    func markUIUpdateComplete() {
+        queue.async { [weak self] in
+            self?.isUIUpdatePending = false
+        }
+    }
+
+    func ingest(_ sample: IMUSample) {
+        if isRecordingRollCalibration {
+            recordedRollSamples.append(sample)
+        }
+        pipeline.ingestSample(sample)
     }
 
     private func tick(onTelemetryUpdate: @escaping @Sendable (TelemetrySnapshot, TriggeredGesture?) -> Void) {
@@ -139,15 +154,14 @@ private final class BackgroundCursorWorker: @unchecked Sendable {
         }
 
         frameCounter += 1
-        // Throttle UI state updates to ~20Hz (every 6th tick) and never queue backlogged main-thread blocks
-        if (frameCounter % 6 == 0 || frame.triggeredGesture != nil) && !isUIUpdatePending {
+        // Throttle UI state updates to ~30Hz (every 4th tick) and never queue backlogged main-thread blocks
+        if (frameCounter % 4 == 0 || frame.triggeredGesture != nil) && !isUIUpdatePending {
             isUIUpdatePending = true
             let snap = pipeline.telemetry
             let trig = frame.triggeredGesture
-            DispatchQueue.main.async { [weak self] in
-                self?.queue.async {
-                    self?.isUIUpdatePending = false
-                }
+            let workerRef = self
+            DispatchQueue.main.async {
+                workerRef.markUIUpdateComplete()
                 onTelemetryUpdate(snap, trig)
             }
         }
@@ -195,6 +209,8 @@ public final class HeadphoneMotionController: NSObject, @unchecked Sendable {
         }
     }
 
+    public var diagnosticEngine = DiagnosticBenchmarkEngine()
+    public private(set) var isCalibratingRollBleed: Bool = false
     public private(set) var sensorState: SensorSourceState = .waitingForAirPods
     public private(set) var isAccessibilityGranted: Bool = false
     public private(set) var hasMotionUsagePlistKey: Bool = false
@@ -245,6 +261,7 @@ public final class HeadphoneMotionController: NSObject, @unchecked Sendable {
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.telemetry = snap
+                self.diagnosticEngine.update(telemetry: snap, dt: 4.0 / 120.0)
                 self.yawVelocityTrace.append(snap.filteredYawRateDegPerSec)
                 if self.yawVelocityTrace.count > 60 { self.yawVelocityTrace.removeFirst() }
                 self.pitchVelocityTrace.append(snap.filteredPitchRateDegPerSec)
@@ -307,6 +324,35 @@ public final class HeadphoneMotionController: NSObject, @unchecked Sendable {
             : Vector3(x: 0, y: config.impulseThresholdG * 1.35, z: -config.impulseThresholdG * 1.35)
     }
 
+    /// Runs a 3-second Roll Tilt calibration to learn and cancel the user's anatomical Roll -> Yaw/Pitch bleed.
+    public func runThreeSecondRollCalibration() {
+        guard !isCalibratingRollBleed else { return }
+        isCalibratingRollBleed = true
+        worker.queue.async { [worker] in
+            worker.recordedRollSamples.removeAll()
+            worker.isRecordingRollCalibration = true
+        }
+
+        let workerRef = self.worker
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+            guard let self else { return }
+            workerRef.queue.async { [weak self] in
+                workerRef.isRecordingRollCalibration = false
+                let samples = workerRef.recordedRollSamples
+                let matrix = CrossAxisCalibrator.calibrateFromRollSamples(samples)
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    self.config.decouplingMatrix = matrix
+                    self.isCalibratingRollBleed = false
+                }
+            }
+        }
+    }
+
+    public func resetRollCalibration() {
+        config.decouplingMatrix = .identity
+    }
+
     // MARK: - CoreMotion AirPods Setup
 
     private func startHardwareMotionIfSupported() {
@@ -332,10 +378,9 @@ public final class HeadphoneMotionController: NSObject, @unchecked Sendable {
 
         let workerRef = self.worker
         let handler = NonIsolatedCallbackFactory.makeMotionHandler { [weak self] sample in
-            // Ingest sample directly on the 120Hz background worker queue for minimum latency!
             workerRef.queue.async {
                 if !workerRef.isSimulatorEnabled {
-                    workerRef.pipeline.ingestSample(sample)
+                    workerRef.ingest(sample)
                 }
             }
             DispatchQueue.main.async { [weak self] in
@@ -451,7 +496,7 @@ public final class HeadphoneMotionController: NSObject, @unchecked Sendable {
             userAcceleration: accel
         )
         worker.queue.async { [worker] in
-            worker.pipeline.ingestSample(sample)
+            worker.ingest(sample)
         }
     }
 

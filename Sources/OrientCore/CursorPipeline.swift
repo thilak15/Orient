@@ -78,6 +78,9 @@ public struct TelemetrySnapshot: Sendable, Equatable {
     public var isClutchHeld: Bool = false
     public var isPrecisionModeActive: Bool = false
     public var lastTriggeredGesture: TriggeredGesture?
+    public var motionClassification: MotionClassification = .idle
+    public var gravityVector: Vector3 = Vector3(x: 0, y: 0, z: -1)
+    public var rawRollRateDegPerSec: Double = 0
 
     public init() {}
 }
@@ -187,36 +190,49 @@ public final class CursorPipeline: @unchecked Sendable {
             let dtMs = max(1.0, min(250.0, (sample.timestamp - prevTime) * 1000.0))
             smoothedPacketIntervalMs = smoothedPacketIntervalMs * 0.82 + dtMs * 0.18
         }
+        let previousSample = latestSample
         lastSampleTimestamp = sample.timestamp
         latestSample = sample
 
-        // 1. Compute relative head pose from neutral anchor
+        // 1. Compute relative head pose from neutral anchor and apply Cross-Axis Decoupling
         if let ref = referenceAttitude {
             let relQ = sample.attitude.relative(to: ref)
-            var angles = relQ.toHeadAnglesDegrees()
+            var angles = config.decouplingMatrix.decoupleAngles(relQ.toHeadAnglesDegrees())
             if config.invertYaw { angles.yawDeg = -angles.yawDeg }
             if config.invertPitch { angles.pitchDeg = -angles.pitchDeg }
             relativeAngles = angles
         }
 
-        // 2. Convert gyroscope rotationRate (rad/s) to screen yaw/pitch velocity (deg/s)
-        let rad2deg = 180.0 / Double.pi
-        let yawSign = config.invertYaw ? 1.0 : -1.0
-        let pitchSign = config.invertPitch ? -1.0 : 1.0
+        // 2. Convert gyroscope rotationRate (rad/s) to screen yaw/pitch/roll velocity (deg/s) & apply Cross-Axis Decoupling
+        let rates = sample.ergonomicRatesDegPerSec
+        let decoupled = config.decouplingMatrix.decouple(
+            yawRateDegPerSec: rates.yawRate,
+            pitchRateDegPerSec: rates.pitchRate,
+            rollRateDegPerSec: rates.rollRate
+        )
 
-        // CoreMotion rotationRate.z: + is counter-clockwise (left), so -z is rightward (+X)
-        let rawYawVel = sample.rotationRate.z * yawSign * rad2deg
-        // CoreMotion rotationRate.x: + is pitch up, which maps to upward screen motion (-Y in CGEvent coordinates)
-        let rawPitchVel = sample.rotationRate.x * pitchSign * rad2deg
+        let rawYawVel = decoupled.yawRate * (config.invertYaw ? -1.0 : 1.0)
+        let rawPitchVel = decoupled.pitchRate * (config.invertPitch ? -1.0 : 1.0)
+        let rawRollVel = rates.rollRate
 
         filteredYawDegPerSec = yawFilter.filter(rawYawVel, timestamp: sample.timestamp)
         filteredPitchDegPerSec = pitchFilter.filter(rawPitchVel, timestamp: sample.timestamp)
 
-        // 3. Evaluate gestures (unless clutch is held or safety paused)
+        // 3. Classify 6-DOF motion and subtract neck-pivot lever-arm acceleration
+        let classifier = MotionClassifier(leverArmRadiusMeters: config.leverArmRadiusMeters)
+        let classification = classifier.analyze(
+            sample: sample,
+            previousSample: previousSample,
+            relativeAngles: relativeAngles
+        )
+
+        // 4. Evaluate gestures using lever-arm-compensated linear acceleration
         let isSafetyOut = relativeAngles.lookDeviationDeg > config.safetyCutoffAngleDeg
         if !isClutchHeld && !isSafetyOut {
+            var compensatedSample = sample
+            compensatedSample.userAcceleration = classification.compensatedLinearAccel
             if let gesture = gestureDetector.evaluate(
-                sample: sample,
+                sample: compensatedSample,
                 relativeAngles: relativeAngles,
                 config: config
             ) {
@@ -224,7 +240,7 @@ public final class CursorPipeline: @unchecked Sendable {
             }
         }
 
-        // 4. Update telemetry
+        // 5. Update telemetry
         let filterLag = 0.5 * (yawFilter.lastEstimatedLagMs + pitchFilter.lastEstimatedLagMs)
         telemetry.packetIntervalMs = smoothedPacketIntervalMs
         telemetry.sampleRateHz = smoothedPacketIntervalMs > 0 ? (1000.0 / smoothedPacketIntervalMs) : 0
@@ -232,9 +248,12 @@ public final class CursorPipeline: @unchecked Sendable {
         telemetry.relativeAngles = relativeAngles
         telemetry.rawYawRateDegPerSec = rawYawVel
         telemetry.rawPitchRateDegPerSec = rawPitchVel
+        telemetry.rawRollRateDegPerSec = rawRollVel
         telemetry.filteredYawRateDegPerSec = filteredYawDegPerSec
         telemetry.filteredPitchRateDegPerSec = filteredPitchDegPerSec
-        telemetry.accelMagnitudeG = sample.userAcceleration.magnitude
+        telemetry.accelMagnitudeG = classification.compensatedLinearAccel.magnitude
+        telemetry.motionClassification = classification
+        telemetry.gravityVector = sample.gravity
         telemetry.isSafetyPaused = isSafetyOut
     }
 

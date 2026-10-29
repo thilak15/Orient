@@ -53,3 +53,4 @@ open ./build/Orient.app
 | `Option + Space` (`⌥Space`) | Start / Stop Cursor Control (Emergency Kill-Switch) |
 | `Option + R` (`⌥R`) | Instant Recenter Neutral Head Pose |
 | `Option + C` (`⌥C`) | Toggle Clutch (reposition neck freely; releasing re-anchors center) |
+
