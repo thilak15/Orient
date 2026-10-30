@@ -53,7 +53,7 @@ private enum NonIsolatedCallbackFactory {
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             guard flags.contains(.option) else { return }
             let code = event.keyCode
-            if code == 49 || code == 15 || code == 8 {
+            if code == 49 || code == 15 || code == 8 || code == 46 {
                 onKeyCode(code)
             }
         }
@@ -66,7 +66,7 @@ private enum NonIsolatedCallbackFactory {
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             if flags.contains(.option) {
                 let code = event.keyCode
-                if code == 49 || code == 15 || code == 8 {
+                if code == 49 || code == 15 || code == 8 || code == 46 {
                     onKeyCode(code)
                     return nil
                 }
@@ -82,8 +82,16 @@ private final class BackgroundCursorWorker: @unchecked Sendable {
     let queue = DispatchQueue(label: "com.orient.engine120hz.queue", qos: .userInteractive)
     let pipeline = CursorPipeline()
     let cursorInjector = SystemCursorInjector()
+    var gameEngine = GameControllerEngine()
 
-    var isTrackingActive: Bool = false
+    var isTrackingActive: Bool = false {
+        didSet {
+            if !isTrackingActive {
+                cursorInjector.releaseAllHeldKeys()
+                gameEngine.reset()
+            }
+        }
+    }
     var isSimulatorEnabled: Bool = false
     var isRecordingRollCalibration: Bool = false
     var recordedRollSamples: [IMUSample] = []
@@ -92,7 +100,7 @@ private final class BackgroundCursorWorker: @unchecked Sendable {
     private var frameCounter: Int = 0
     private var isUIUpdatePending: Bool = false
 
-    func start(onTelemetryUpdate: @escaping @Sendable (TelemetrySnapshot, TriggeredGesture?) -> Void) {
+    func start(onTelemetryUpdate: @escaping @Sendable (TelemetrySnapshot, TriggeredGesture?, TacticalLeanState) -> Void) {
         queue.async { [weak self] in
             guard let self, self.timer120Hz == nil else { return }
             let timer = DispatchSource.makeTimerSource(flags: .strict, queue: self.queue)
@@ -119,7 +127,7 @@ private final class BackgroundCursorWorker: @unchecked Sendable {
         pipeline.ingestSample(sample)
     }
 
-    private func tick(onTelemetryUpdate: @escaping @Sendable (TelemetrySnapshot, TriggeredGesture?) -> Void) {
+    private func tick(onTelemetryUpdate: @escaping @Sendable (TelemetrySnapshot, TriggeredGesture?, TacticalLeanState) -> Void) {
         let now = ProcessInfo.processInfo.systemUptime
         let currentPos = cursorInjector.currentCursorPosition()
         let bounds = cursorInjector.currentScreenBounds()
@@ -130,12 +138,29 @@ private final class BackgroundCursorWorker: @unchecked Sendable {
             screenBounds: bounds
         )
 
+        let gameCmd = gameEngine.step120Hz(
+            telemetry: pipeline.telemetry,
+            baseDeltaX: frame.deltaX,
+            baseDeltaY: frame.deltaY,
+            dt: 1.0 / 120.0
+        )
+
         if isTrackingActive {
-            if frame.shouldMoveCursor {
+            if let leanChange = gameCmd.leanStateChangedTo {
+                cursorInjector.updateTacticalLeanKeys(to: leanChange)
+            }
+
+            if abs(gameCmd.deltaX) > 0.05 || abs(gameCmd.deltaY) > 0.05 || gameCmd.shouldResetTouchDragAnchor {
+                let targetPos = bounds.clamp(Point2D(
+                    x: currentPos.x + gameCmd.deltaX,
+                    y: currentPos.y + gameCmd.deltaY
+                ))
                 cursorInjector.moveCursor(
-                    to: frame.targetPosition,
-                    deltaX: frame.deltaX,
-                    deltaY: frame.deltaY
+                    to: targetPos,
+                    deltaX: gameCmd.deltaX,
+                    deltaY: gameCmd.deltaY,
+                    injectionProtocol: gameEngine.injectionProtocol,
+                    shouldResetTouchDragAnchor: gameCmd.shouldResetTouchDragAnchor
                 )
             }
 
@@ -155,14 +180,15 @@ private final class BackgroundCursorWorker: @unchecked Sendable {
 
         frameCounter += 1
         // Throttle UI state updates to ~30Hz (every 4th tick) and never queue backlogged main-thread blocks
-        if (frameCounter % 4 == 0 || frame.triggeredGesture != nil) && !isUIUpdatePending {
+        if (frameCounter % 4 == 0 || frame.triggeredGesture != nil || gameCmd.leanStateChangedTo != nil) && !isUIUpdatePending {
             isUIUpdatePending = true
             let snap = pipeline.telemetry
             let trig = frame.triggeredGesture
+            let lean = gameCmd.currentLeanState
             let workerRef = self
             DispatchQueue.main.async {
                 workerRef.markUIUpdateComplete()
-                onTelemetryUpdate(snap, trig)
+                onTelemetryUpdate(snap, trig, lean)
             }
         }
     }
@@ -210,6 +236,28 @@ public final class HeadphoneMotionController: NSObject, @unchecked Sendable {
     }
 
     public var diagnosticEngine = DiagnosticBenchmarkEngine()
+    public var gameEngine = GameControllerEngine() {
+        didSet {
+            let updated = gameEngine
+            worker.queue.async { [worker] in
+                worker.gameEngine.injectionProtocol = updated.injectionProtocol
+                worker.gameEngine.aimStyle = updated.aimStyle
+                worker.gameEngine.isADSActive = updated.isADSActive
+                worker.gameEngine.adsMultiplier = updated.adsMultiplier
+                worker.gameEngine.inGameSensitivityMultiplier = updated.inGameSensitivityMultiplier
+                worker.gameEngine.tightEdgeYawDeg = updated.tightEdgeYawDeg
+                worker.gameEngine.tightEdgePitchDeg = updated.tightEdgePitchDeg
+                worker.gameEngine.tightEdgePanSpeedPxPerSec = updated.tightEdgePanSpeedPxPerSec
+                worker.gameEngine.leanTriggerAngleDeg = updated.leanTriggerAngleDeg
+                worker.gameEngine.leanReleaseAngleDeg = updated.leanReleaseAngleDeg
+            }
+        }
+    }
+    public var isFloatingHUDVisible: Bool = false {
+        didSet {
+            hudManager.setVisible(isFloatingHUDVisible, controller: self)
+        }
+    }
     public private(set) var isCalibratingRollBleed: Bool = false
     public private(set) var sensorState: SensorSourceState = .waitingForAirPods
     public private(set) var isAccessibilityGranted: Bool = false
@@ -221,6 +269,7 @@ public final class HeadphoneMotionController: NSObject, @unchecked Sendable {
 
     private let worker = BackgroundCursorWorker()
     private let audioKeepAlive = SilentAudioKeepAlive()
+    private let hudManager = InGameHUDWindowManager()
 
     private var hasStartedEngine: Bool = false
     private var motionManager: CMHeadphoneMotionManager?
@@ -257,7 +306,7 @@ public final class HeadphoneMotionController: NSObject, @unchecked Sendable {
         setupMediaCommandCenter()
         startPermissionMonitor()
 
-        worker.start { [weak self] snap, triggered in
+        worker.start { [weak self] snap, triggered, _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.telemetry = snap
@@ -526,6 +575,8 @@ public final class HeadphoneMotionController: NSObject, @unchecked Sendable {
                     self.recenterPose()
                 case 8:  // Option + C -> Toggle Clutch
                     self.setClutchHeld(!self.telemetry.isClutchHeld)
+                case 46: // Option + M -> Cycle In-Game Aim Style live!
+                    self.gameEngine.aimStyle = self.gameEngine.aimStyle.next
                 default:
                     break
                 }

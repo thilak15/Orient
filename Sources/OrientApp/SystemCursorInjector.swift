@@ -4,15 +4,22 @@ import CoreGraphics
 import ApplicationServices
 import OrientCore
 
-/// Low-latency macOS cursor & mouse click injector using CoreGraphics HID events.
+/// Low-latency macOS cursor, 3D game raw-delta, emulator touch-drag, and tactical Q/E key injector.
 public final class SystemCursorInjector: @unchecked Sendable {
     private let eventSource: CGEventSource?
+    private var activeLeanState: TacticalLeanState = .upright
+    private var isTouchDragging: Bool = false
+
+    // macOS Virtual KeyCodes
+    private let keyCodeQ: CGKeyCode = 12
+    private let keyCodeE: CGKeyCode = 14
+    private let keyCodeSpace: CGKeyCode = 49
+    private let keyCodeR: CGKeyCode = 15
 
     public init() {
         self.eventSource = CGEventSource(stateID: .hidSystemState)
     }
 
-    /// Returns whether the process currently has macOS Accessibility trust to inject HID events.
     public static func isAccessibilityTrusted(promptIfNeeded: Bool = false) -> Bool {
         if promptIfNeeded {
             let promptKey = "AXTrustedCheckOptionPrompt" as CFString
@@ -22,7 +29,6 @@ public final class SystemCursorInjector: @unchecked Sendable {
         return AXIsProcessTrusted()
     }
 
-    /// Current mouse cursor location in Quartz global top-left coordinates.
     public func currentCursorPosition() -> Point2D {
         if let event = CGEvent(source: nil) {
             let loc = event.location
@@ -31,7 +37,6 @@ public final class SystemCursorInjector: @unchecked Sendable {
         return Point2D(x: 600, y: 400)
     }
 
-    /// Combined Quartz screen bounds across connected displays.
     public func currentScreenBounds() -> Rect2D {
         let mainID = CGMainDisplayID()
         let rect = CGDisplayBounds(mainID)
@@ -46,10 +51,54 @@ public final class SystemCursorInjector: @unchecked Sendable {
         return Rect2D(minX: 0, minY: 0, maxX: 1920, maxY: 1080)
     }
 
-    /// Moves the macOS system cursor and sets hardware deltaX/deltaY fields.
-    public func moveCursor(to target: Point2D, deltaX: Double, deltaY: Double) {
-        let cgPoint = CGPoint(x: target.x, y: target.y)
+    /// Moves the macOS cursor and sets hardware deltaX/deltaY fields for 3D Pointer-Lock FPS games.
+    public func moveCursor(
+        to target: Point2D,
+        deltaX: Double,
+        deltaY: Double,
+        injectionProtocol: GameInjectionProtocol = .pointerLockRawDelta,
+        shouldResetTouchDragAnchor: Bool = false
+    ) {
+        let bounds = currentScreenBounds()
+        let anchorCenter = Point2D(
+            x: (bounds.minX + bounds.maxX) * 0.65,
+            y: (bounds.minY + bounds.maxY) * 0.52
+        )
 
+        if injectionProtocol == .emulatorTouchDrag {
+            if shouldResetTouchDragAnchor && isTouchDragging {
+                let cur = CGPoint(x: target.x, y: target.y)
+                if let up = CGEvent(mouseEventSource: eventSource, mouseType: .leftMouseUp, mouseCursorPosition: cur, mouseButton: .left) {
+                    up.post(tap: .cghidEventTap)
+                }
+                let centerCG = CGPoint(x: anchorCenter.x, y: anchorCenter.y)
+                CGWarpMouseCursorPosition(centerCG)
+                if let down = CGEvent(mouseEventSource: eventSource, mouseType: .leftMouseDown, mouseCursorPosition: centerCG, mouseButton: .left) {
+                    down.post(tap: .cghidEventTap)
+                }
+                return
+            }
+
+            let cgPoint = CGPoint(x: target.x, y: target.y)
+            if !isTouchDragging {
+                isTouchDragging = true
+                if let down = CGEvent(mouseEventSource: eventSource, mouseType: .leftMouseDown, mouseCursorPosition: cgPoint, mouseButton: .left) {
+                    down.post(tap: .cghidEventTap)
+                }
+            }
+            if let drag = CGEvent(mouseEventSource: eventSource, mouseType: .leftMouseDragged, mouseCursorPosition: cgPoint, mouseButton: .left) {
+                drag.setDoubleValueField(.mouseEventDeltaX, value: deltaX)
+                drag.setDoubleValueField(.mouseEventDeltaY, value: deltaY)
+                drag.post(tap: .cghidEventTap)
+            }
+            return
+        }
+
+        if isTouchDragging {
+            releaseTouchDragIfNeeded()
+        }
+
+        let cgPoint = CGPoint(x: target.x, y: target.y)
         if let moveEvent = CGEvent(
             mouseEventSource: eventSource,
             mouseType: .mouseMoved,
@@ -64,7 +113,48 @@ public final class SystemCursorInjector: @unchecked Sendable {
         }
     }
 
-    /// Executes a synthetic mouse click at the specified position (supporting Pre-Click Rollback).
+    public func releaseTouchDragIfNeeded() {
+        guard isTouchDragging else { return }
+        isTouchDragging = false
+        let pos = currentCursorPosition()
+        let cgPoint = CGPoint(x: pos.x, y: pos.y)
+        if let up = CGEvent(mouseEventSource: eventSource, mouseType: .leftMouseUp, mouseCursorPosition: cgPoint, mouseButton: .left) {
+            up.post(tap: .cghidEventTap)
+        }
+    }
+
+    /// Updates Q/E tactical peek key hold states for PUBG / Tactical FPS games.
+    public func updateTacticalLeanKeys(to newState: TacticalLeanState) {
+        guard newState != activeLeanState else { return }
+
+        // Release previously held lean key
+        switch activeLeanState {
+        case .leanLeftQ:
+            postKey(keyCode: keyCodeQ, keyDown: false)
+        case .leanRightE:
+            postKey(keyCode: keyCodeE, keyDown: false)
+        case .upright:
+            break
+        }
+
+        // Press newly active lean key
+        switch newState {
+        case .leanLeftQ:
+            postKey(keyCode: keyCodeQ, keyDown: true)
+        case .leanRightE:
+            postKey(keyCode: keyCodeE, keyDown: true)
+        case .upright:
+            break
+        }
+
+        activeLeanState = newState
+    }
+
+    public func releaseAllHeldKeys() {
+        updateTacticalLeanKeys(to: .upright)
+        releaseTouchDragIfNeeded()
+    }
+
     public func performClick(action: GestureAction, at position: Point2D) {
         let cgPoint = CGPoint(x: position.x, y: position.y)
 
@@ -105,6 +195,12 @@ public final class SystemCursorInjector: @unchecked Sendable {
         }
     }
 
+    private func postKey(keyCode: CGKeyCode, keyDown: Bool) {
+        if let event = CGEvent(keyboardEventSource: eventSource, virtualKey: keyCode, keyDown: keyDown) {
+            event.post(tap: .cghidEventTap)
+        }
+    }
+
     private func postMouseClick(
         downType: CGEventType,
         upType: CGEventType,
@@ -130,4 +226,3 @@ public final class SystemCursorInjector: @unchecked Sendable {
         }
     }
 }
-

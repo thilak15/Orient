@@ -27,13 +27,14 @@ public struct OrientDashboardView: View {
                 }
                 .frame(minWidth: 330, idealWidth: 355, maxWidth: 400)
 
-                // Right Panel: 3D Spatial Lab, 2D Target Benchmark Pad & Tuning Studio
+                // Right Panel: Live Game Mode, 3D Spatial Lab, 2D Target Benchmark Pad & Tuning Studio
                 VStack(spacing: 12) {
                     Picker("Workspace", selection: $selectedTab) {
-                        Text("🧊 3D Spatial & 6-DOF Lab").tag(0)
-                        Text("🎯 2D Target & Latency Pad").tag(1)
-                        Text("⚡ Sensitivity, Edge Pan & 1-Euro Filter").tag(2)
-                        Text("🖱️ Click Gestures & Aim-Freeze").tag(3)
+                        Text("🎮 Live Game Mode & PUBG Suite").tag(0)
+                        Text("🧊 3D Spatial & 6-DOF Lab").tag(1)
+                        Text("🎯 2D Target & Latency Pad").tag(2)
+                        Text("⚡ Sensitivity & 1-Euro Filter").tag(3)
+                        Text("🖱️ Click Gestures & Aim-Freeze").tag(4)
                     }
                     .pickerStyle(.segmented)
                     .padding(.horizontal, 16)
@@ -42,10 +43,12 @@ public struct OrientDashboardView: View {
                     Group {
                         switch selectedTab {
                         case 0:
-                            Spatial3DLabView(controller: controller)
+                            GameIntegrationView(controller: controller)
                         case 1:
-                            TargetBenchmarkView(controller: controller)
+                            Spatial3DLabView(controller: controller)
                         case 2:
+                            TargetBenchmarkView(controller: controller)
+                        case 3:
                             sensitivityAndFilterTab
                         default:
                             gesturesAndAimFreezeTab
@@ -120,6 +123,17 @@ public struct OrientDashboardView: View {
             }
 
             // Primary Action Buttons
+            Button {
+                controller.isFloatingHUDVisible.toggle()
+            } label: {
+                Label(
+                    controller.isFloatingHUDVisible ? "Hide Game HUD" : "Show Game HUD",
+                    systemImage: "viewfinder.rectangular"
+                )
+            }
+            .buttonStyle(.bordered)
+            .tint(controller.isFloatingHUDVisible ? .cyan : .primary)
+
             Button {
                 controller.recenterPose()
             } label: {

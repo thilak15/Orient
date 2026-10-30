@@ -8,12 +8,13 @@ echo "Building OrientApp..."
 swift build -c debug --product OrientApp
 
 BIN_PATH="$(swift build -c debug --show-bin-path)/OrientApp"
-APP_DIR="$ROOT_DIR/build/Orient.app"
+TMP_BUILD_DIR="/tmp/OrientAppBuild"
+APP_DIR="$TMP_BUILD_DIR/Orient.app"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 
-rm -rf "$APP_DIR"
+rm -rf "$TMP_BUILD_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 
 cp "$BIN_PATH" "$MACOS_DIR/OrientApp"
@@ -60,5 +61,8 @@ echo -n "APPL????" > "$CONTENTS_DIR/PkgInfo"
 
 find "$APP_DIR" -exec xattr -c {} + 2>/dev/null || true
 codesign --force --deep --sign - "$APP_DIR"
-echo "Packaged and signed: $APP_DIR"
 
+mkdir -p "$ROOT_DIR/build"
+rm -rf "$ROOT_DIR/build/Orient.app"
+cp -R "$APP_DIR" "$ROOT_DIR/build/Orient.app"
+echo "Packaged and signed: $APP_DIR"
