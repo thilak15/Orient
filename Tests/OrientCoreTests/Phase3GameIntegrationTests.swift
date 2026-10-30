@@ -31,44 +31,91 @@ struct Phase3GameIntegrationTests {
         #expect(cmdRelease.currentLeanState == .upright)
     }
 
-    @Test("Closed-Loop Accela 6x Micro-Gain snaps in-game screen back to (0, 0) when Recenter (⌥R) is pressed")
-    func testClosedLoopRecenterSnapsScreenBackToCenter() {
+    @Test("Auto-Ratchet Turn-Commit: turning left and returning head to center keeps camera facing left with zero pull-back")
+    func testAutoRatchetTurnCommitAndMultiPump() {
+        var game = GameControllerEngine()
+        game.aimStyle = .microGainAmplified
+        game.autoRatchetYawEnabled = true
+
+        var totalInjectedGameX: Double = 0.0
+        var snap = TelemetrySnapshot()
+
+        // 1. Start at 0 deg
+        snap.relativeAngles = .zero
+        _ = game.step120Hz(telemetry: snap, baseDeltaX: 0, baseDeltaY: 0, dt: 1.0 / 120.0)
+
+        // 2. Turn head Left from 0° -> -3.5°
+        let outboundSteps = 15
+        for i in 1...outboundSteps {
+            let yaw = -3.5 * (Double(i) / Double(outboundSteps))
+            snap.relativeAngles = HeadAngles(yawDeg: yaw, pitchDeg: 0, rollDeg: 0)
+            snap.filteredYawRateDegPerSec = -25.0
+            let cmd = game.step120Hz(telemetry: snap, baseDeltaX: 0, baseDeltaY: 0, dt: 1.0 / 120.0)
+            totalInjectedGameX += cmd.deltaX
+        }
+
+        let turnedLeftPositionX = totalInjectedGameX
+        #expect(turnedLeftPositionX < -150.0)
+
+        // 3. Bring head back from -3.5° -> 0.0° (normal center looking at monitor)
+        let returnSteps = 15
+        var pullBackDuringReturn: Double = 0.0
+        for i in 1...returnSteps {
+            let yaw = -3.5 * (1.0 - Double(i) / Double(returnSteps))
+            snap.relativeAngles = HeadAngles(yawDeg: yaw, pitchDeg: 0, rollDeg: 0)
+            snap.filteredYawRateDegPerSec = 25.0
+            let cmd = game.step120Hz(telemetry: snap, baseDeltaX: 0, baseDeltaY: 0, dt: 1.0 / 120.0)
+            pullBackDuringReturn += cmd.deltaX
+            totalInjectedGameX += cmd.deltaX
+        }
+
+        // Camera stays facing the new left direction (zero rightward pull-back when head returns to center!)
+        #expect(pullBackDuringReturn <= 0.01)
+        #expect(totalInjectedGameX <= turnedLeftPositionX)
+
+        // 4. Turn head Left AGAIN from 0° -> -3.5° to turn even further left without twisting neck past -3.5°!
+        for i in 1...outboundSteps {
+            let yaw = -3.5 * (Double(i) / Double(outboundSteps))
+            snap.relativeAngles = HeadAngles(yawDeg: yaw, pitchDeg: 0, rollDeg: 0)
+            snap.filteredYawRateDegPerSec = -25.0
+            let cmd = game.step120Hz(telemetry: snap, baseDeltaX: 0, baseDeltaY: 0, dt: 1.0 / 120.0)
+            totalInjectedGameX += cmd.deltaX
+        }
+
+        #expect(totalInjectedGameX < turnedLeftPositionX * 1.8)
+    }
+
+    @Test("Closed-Loop Horizon Pitch snaps in-game vertical view back to 0 when Recenter (⌥R) is pressed")
+    func testClosedLoopRecenterSnapsVerticalHorizonBackToCenter() {
         var game = GameControllerEngine()
         game.aimStyle = .microGainAmplified
 
-        var totalInjectedGameX: Double = 0.0
         var totalInjectedGameY: Double = 0.0
 
-        // 1. User tilts head down (-5 deg) and right (+4 deg)
+        // 1. User tilts head down (-5 deg)
         var snap = TelemetrySnapshot()
-        snap.relativeAngles = HeadAngles(yawDeg: 4.0, pitchDeg: -5.0, rollDeg: 0.0)
-        snap.filteredYawRateDegPerSec = 25.0
+        snap.relativeAngles = HeadAngles(yawDeg: 0.0, pitchDeg: -5.0, rollDeg: 0.0)
         snap.filteredPitchRateDegPerSec = -25.0
 
         for _ in 0..<25 {
             let cmd = game.step120Hz(telemetry: snap, baseDeltaX: 0, baseDeltaY: 0, dt: 1.0 / 120.0)
-            totalInjectedGameX += cmd.deltaX
             totalInjectedGameY += cmd.deltaY
         }
 
-        // In-game camera has moved right (+X) and down (+Y)
-        #expect(totalInjectedGameX > 150.0)
+        // In-game camera has moved down (+Y)
         #expect(totalInjectedGameY > 100.0)
 
         // 2. User presses Recenter (⌥R): pipeline resets relativeAngles to (0, 0) and calls onRecenterPressed()
         game.onRecenterPressed()
         snap.relativeAngles = .zero
-        snap.filteredYawRateDegPerSec = 0
         snap.filteredPitchRateDegPerSec = 0
 
         for _ in 0..<10 {
             let cmd = game.step120Hz(telemetry: snap, baseDeltaX: 0, baseDeltaY: 0, dt: 1.0 / 120.0)
-            totalInjectedGameX += cmd.deltaX
             totalInjectedGameY += cmd.deltaY
         }
 
-        // Closed-loop counter-deltas physically return the in-game 3D screen to exact (0, 0) horizon/center!
-        #expect(abs(totalInjectedGameX) < 0.01)
+        // Closed-loop counter-deltas physically return the in-game 3D vertical view to exact 0.0 horizon!
         #expect(abs(totalInjectedGameY) < 0.01)
     }
 

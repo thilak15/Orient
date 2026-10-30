@@ -12,8 +12,8 @@ public enum GameInjectionProtocol: String, CaseIterable, Sendable, Codable, Iden
 /// Selectable in-game aiming paradigms designed for Non-VR flat screens.
 /// Can be cycled live while inside a game using `Option + M` (`⌥M`).
 public enum InGameAimStyle: String, CaseIterable, Sendable, Codable, Identifiable {
-    case microGainAmplified = "1. Accela 6x Micro-Gain (Recommended • Zero-Drift Closed-Loop)"
-    case gyroHybridTightEdge = "2. 6x Micro-Gain + ±6° Continuous 360° Edge Turn"
+    case microGainAmplified = "1. Accela 6x Micro-Gain + Auto-Ratchet Turn (Recommended)"
+    case gyroHybridTightEdge = "2. Pure Bidirectional 6x + ±5.5° Edge Spin"
     case velocityThumbstick = "3. Velocity Thumbstick (Tilt to Turn, Center to Hold)"
     case faceForwardRollAim = "4. Face-Forward (Roll = Left/Right, Pitch = Up/Down)"
 
@@ -55,11 +55,13 @@ public struct GameFrameCommand: Sendable, Equatable {
     }
 }
 
-/// Research-Backed Non-VR 3D FPS Game Controller Engine (TrackIR / Opentrack Accela Spline + Closed-Loop Pose Synchronization):
-/// - Eliminates path-dependent velocity drift via Closed-Loop Virtual Camera Tracking (`ΔCam = TargetCam(θ) - VirtualCam`).
-/// - Physically returns the in-game 3D screen to center/horizon when `Recenter (⌥R)` is pressed (`ΔCam = -VirtualCam`).
-/// - Uses a 3-Zone C¹ Accela Non-Linear Gain Spline: Foveal Precision Pocket (0°–1.2°) -> 6x Combat Ramp (1.2°–5°) -> Wide Turn Boost (>5°).
-/// - Applies Asymmetric Pitch-to-Yaw Anisotropy (`verticalPitchRatio = 0.55`) and Cross-Axis Chin-Dip Suppression during fast horizontal flicks.
+/// Research-Backed Non-VR 3D FPS Game Controller Engine:
+/// - **Auto-Ratchet Turn-Commit (Yaw)**: Turning your head left/right (> `ratchetTurnThresholdDeg` = 1.5°) rotates the 3D camera
+///   into the new direction (with 6x Accela gain + continuous spin past 3.8°), and bringing your head back to normal center (0°)
+///   automatically clutches (`ΔX = 0`) so your character STAYS facing the new direction! You can pump/ratchet or hold to turn 360°+
+///   while keeping your eyes on the monitor. Inside ±1.5°, aiming is 100% bidirectional for fine crosshair tracking.
+/// - **Closed-Loop Horizon Lock (Pitch)**: Vertical Pitch (`Y`) is closed-loop synchronized (`ΔY = TargetCamY(θ_pitch) - virtualCameraY`),
+///   so returning your head to level posture or pressing `Recenter (⌥R)` physically snaps the in-game screen back to the level horizon!
 public struct GameControllerEngine: Sendable {
     public var injectionProtocol: GameInjectionProtocol = .pubgTacticalLean
     public var aimStyle: InGameAimStyle = .microGainAmplified
@@ -67,7 +69,10 @@ public struct GameControllerEngine: Sendable {
     public var adsMultiplier: Double = 0.45
     public var inGameSensitivityMultiplier: Double = 1.25
 
-    // Research-Backed Accela 6x Micro-Gain Tuning Parameters
+    // Research-Backed Accela 6x Micro-Gain + Auto-Ratchet Turn Parameters
+    public var autoRatchetYawEnabled: Bool = true
+    public var ratchetTurnThresholdDeg: Double = 1.50
+    public var outerContinuousTurnAngleDeg: Double = 3.80
     public var microGainFactor: Double = 6.2
     public var fovealRadiusDeg: Double = 1.25
     public var nonLinearCurveExponent: Double = 1.60
@@ -78,7 +83,7 @@ public struct GameControllerEngine: Sendable {
     // Tight Non-VR Edge Pan thresholds for Hybrid 360° spin mode
     public var tightEdgeYawDeg: Double = 5.5
     public var tightEdgePitchDeg: Double = 4.5
-    public var tightEdgePanSpeedPxPerSec: Double = 1250.0
+    public var tightEdgePanSpeedPxPerSec: Double = 1350.0
 
     // Q/E Roll Peek Hysteresis thresholds
     public var leanTriggerAngleDeg: Double = 11.0
@@ -95,6 +100,12 @@ public struct GameControllerEngine: Sendable {
     public private(set) var virtualCameraY: Double = 0.0
     private var continuousEdgeTurnOffsetX: Double = 0.0
 
+    // Auto-Ratchet Yaw State Machine
+    public private(set) var isRatchetingReturnToCenter: Bool = false
+    private var prevSmoothedYawDeg: Double = 0.0
+    private var peakTurnYawDeg: Double = 0.0
+    private var uncommittedFovealYawPx: Double = 0.0
+
     // Velocity-Adaptive Smoothed Pose State
     private var smoothedYawDeg: Double = 0.0
     private var smoothedPitchDeg: Double = 0.0
@@ -110,19 +121,31 @@ public struct GameControllerEngine: Sendable {
         virtualCameraX = 0
         virtualCameraY = 0
         continuousEdgeTurnOffsetX = 0
+        isRatchetingReturnToCenter = false
+        prevSmoothedYawDeg = 0
+        peakTurnYawDeg = 0
+        uncommittedFovealYawPx = 0
         smoothedYawDeg = 0
         smoothedPitchDeg = 0
         hasInitializedPose = false
     }
 
     /// Called when the user presses `Recenter (⌥R)` while tracking is active:
-    /// Zeros the target head pose (`smoothedYawDeg = 0, smoothedPitchDeg = 0` and `continuousEdgeTurnOffsetX = 0`)
-    /// while preserving `virtualCameraX` and `virtualCameraY` so the next ticks automatically inject
-    /// `(-virtualCameraX, -virtualCameraY)` into the game, physically rotating the in-game 3D screen back to center!
+    /// - Vertically (`Y` / Pitch): Preserves `virtualCameraY` while zeroing `smoothedPitchDeg`, so the next ticks inject
+    ///   `-virtualCameraY` to physically bring the in-game screen back to the level horizon!
+    /// - Horizontally (`X` / Yaw): Keeps committed body turns intact while snapping any uncommitted offset back to center.
     public mutating func onRecenterPressed() {
         smoothedYawDeg = 0.0
         smoothedPitchDeg = 0.0
+        prevSmoothedYawDeg = 0.0
+        peakTurnYawDeg = 0.0
+        isRatchetingReturnToCenter = false
         continuousEdgeTurnOffsetX = 0.0
+        if autoRatchetYawEnabled && aimStyle == .microGainAmplified {
+            // Only snap back uncommitted foveal offset so committed hallway turns stay facing the new direction
+            virtualCameraX = uncommittedFovealYawPx
+            uncommittedFovealYawPx = 0.0
+        }
     }
 
     public mutating func step120Hz(
@@ -168,23 +191,26 @@ public struct GameControllerEngine: Sendable {
 
         switch aimStyle {
         case .microGainAmplified:
-            // Closed-Loop Accela Non-Linear 6x Micro-Gain:
-            // Maps filtered (Yaw, Pitch) directly to Target Virtual Camera Pixels and emits the exact differential!
-            let targetCamX = evaluateAccelaNonLinearPixels(angleDeg: smoothedYawDeg, isPitch: false, masterMult: masterMult)
+            // Vertical Pitch (Y): 100% Closed-Loop Horizon-Locked so the screen NEVER stays stuck looking at the floor/sky!
             let targetCamY = -evaluateAccelaNonLinearPixels(angleDeg: smoothedPitchDeg, isPitch: true, masterMult: masterMult)
-
-            let rawErrX = targetCamX - virtualCameraX
             let rawErrY = targetCamY - virtualCameraY
             let maxStepPerTick = 140.0
-
-            outDX = max(-maxStepPerTick, min(maxStepPerTick, rawErrX))
             outDY = max(-maxStepPerTick, min(maxStepPerTick, rawErrY))
-            virtualCameraX += outDX
             virtualCameraY += outDY
 
+            // Horizontal Yaw (X): Auto-Ratchet Turn-Commit + Foveal 6x Micro-Gain
+            if autoRatchetYawEnabled {
+                outDX = stepAutoRatchetYaw(masterMult: masterMult, dt: clampedDt)
+                virtualCameraX += outDX
+            } else {
+                let targetCamX = evaluateAccelaNonLinearPixels(angleDeg: smoothedYawDeg, isPitch: false, masterMult: masterMult)
+                let rawErrX = targetCamX - virtualCameraX
+                outDX = max(-maxStepPerTick, min(maxStepPerTick, rawErrX))
+                virtualCameraX += outDX
+            }
+
         case .gyroHybridTightEdge:
-            // Closed-Loop 6x Micro-Gain inside ±tightEdgeYawDeg + Continuous 360° Horizontal Spin at the edge,
-            // while keeping Vertical Pitch 100% Closed-Loop Pose-Locked to the horizon!
+            // Bidirectional 6x Micro-Gain inside ±tightEdgeYawDeg + Continuous 360° Horizontal Spin at the edge
             if abs(smoothedYawDeg) > tightEdgeYawDeg && abs(baseDeltaX) >= 0 {
                 let sign = smoothedYawDeg >= 0 ? 1.0 : -1.0
                 let excessNorm = min(2.0, (abs(smoothedYawDeg) - tightEdgeYawDeg) / 5.0)
@@ -205,7 +231,7 @@ public struct GameControllerEngine: Sendable {
             virtualCameraY += (outDY - baseDeltaY * masterMult)
 
         case .velocityThumbstick:
-            // Smooth spring-centered joystick: tilting >1.4° spins camera; Vertical Pitch remains horizon-stabilized
+            // Smooth spring-centered joystick: tilting >1.4° spins camera; returning to 0° holds new direction!
             let deadzoneYaw = 1.4
             let deadzonePitch = 1.1
             let maxSpeedPxPerSec = 1400.0 * masterMult
@@ -260,12 +286,72 @@ public struct GameControllerEngine: Sendable {
         )
     }
 
+    // MARK: - Auto-Ratchet Turn-Commit + Foveal Bidirectional 6x Micro-Gain State Machine
+
+    private mutating func stepAutoRatchetYaw(masterMult: Double, dt: Double) -> Double {
+        let curYaw = smoothedYawDeg
+        let prevYaw = prevSmoothedYawDeg
+        prevSmoothedYawDeg = curYaw
+
+        let absCur = abs(curYaw)
+        let absPrev = abs(prevYaw)
+        let crossedCenter = (curYaw * prevYaw < 0.0)
+
+        if crossedCenter {
+            isRatchetingReturnToCenter = false
+            peakTurnYawDeg = curYaw
+        }
+
+        // If moving outward (away from monitor center 0°)
+        if absCur > absPrev {
+            if isRatchetingReturnToCenter && absPrev <= 0.5 {
+                // Completed return to center and now starting a fresh outward turn
+                peakTurnYawDeg = curYaw
+            }
+            isRatchetingReturnToCenter = false
+            if absCur > abs(peakTurnYawDeg) {
+                peakTurnYawDeg = curYaw
+            }
+        } else if absCur < absPrev {
+            // Moving inward toward monitor center (0°):
+            // If this excursion exceeded `ratchetTurnThresholdDeg` (1.5°), clutch the ENTIRE return stroke to 0°!
+            if abs(peakTurnYawDeg) > ratchetTurnThresholdDeg {
+                isRatchetingReturnToCenter = true
+                uncommittedFovealYawPx = 0.0
+                return 0.0
+            }
+        } else if isRatchetingReturnToCenter {
+            return 0.0
+        }
+
+        // Compute Incremental Accela 6x Micro-Gain Delta
+        let curPosPx = evaluateAccelaNonLinearPixels(angleDeg: curYaw, isPitch: false, masterMult: masterMult)
+        let prevPosPx = evaluateAccelaNonLinearPixels(angleDeg: prevYaw, isPitch: false, masterMult: masterMult)
+        var stepDX = curPosPx - prevPosPx
+
+        // Also add smooth continuous outer spin when holding head past `outerContinuousTurnAngleDeg` (3.8°)
+        // so the player can sweep 90°–360° without ever turning their head more than ~4°!
+        if absCur > outerContinuousTurnAngleDeg {
+            let sign = curYaw >= 0 ? 1.0 : -1.0
+            let excessNorm = min(2.2, (absCur - outerContinuousTurnAngleDeg) / 4.0)
+            stepDX += sign * excessNorm * tightEdgePanSpeedPxPerSec * masterMult * dt
+            uncommittedFovealYawPx = 0.0
+        } else if absCur <= ratchetTurnThresholdDeg {
+            uncommittedFovealYawPx += stepDX
+        } else {
+            uncommittedFovealYawPx = 0.0
+        }
+
+        return max(-140.0, min(140.0, stepDX))
+    }
+
     // MARK: - TrackIR / Opentrack Accela 3-Zone Non-Linear Spline & Anti-Tremor Filter
 
     private mutating func updateSmoothedPose(angles: HeadAngles, telemetry: TelemetrySnapshot) {
         if !hasInitializedPose {
             smoothedYawDeg = angles.yawDeg
             smoothedPitchDeg = angles.pitchDeg
+            prevSmoothedYawDeg = angles.yawDeg
             hasInitializedPose = true
             return
         }

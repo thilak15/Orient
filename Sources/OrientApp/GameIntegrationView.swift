@@ -126,12 +126,31 @@ struct GameIntegrationView: View {
                     .tint(.cyan)
                 }
 
-                Text("Why this fixes looking down / off-center: Instead of open-loop velocity integration (which drifts toward the floor when you move down fast and up slow), Orient now uses Closed-Loop Pose Tracking (ΔCam = TargetCam(θ) - VirtualCam) + TrackIR/Opentrack's 3-Zone Accela Spline. Returning your head to 0° or pressing ⌥R injects (-ScreenOffsetX, -ScreenOffsetY) back into the game so the 3D screen physically snaps back to the horizon!")
+                Text("How Auto-Ratchet + Closed-Loop Pitch Works: When you turn your head Left (>1.5°) to go down a left hallway, the camera turns Left. When you bring your head back to the middle of the screen (0°), Auto-Ratchet clutches the return stroke (ΔX = 0) so your character STAYS facing the new direction! Want to turn more left? Just turn your head 3° left from center again (or hold past 3.8° for continuous spin). Meanwhile, Vertical Pitch stays Closed-Loop Horizon-Locked so pressing ⌥R snaps your vertical view right back to the level horizon!")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
 
+                HStack(spacing: 18) {
+                    Toggle("Enable Auto-Ratchet Turn-Commit (Keep New Direction When Head Returns to Center)", isOn: $controller.gameEngine.autoRatchetYawEnabled)
+                        .font(.caption.bold())
+                        .tint(.green)
+                    Spacer()
+                }
+
                 Divider()
 
+                sliderRow(
+                    title: "Auto-Ratchet Turn Commit Threshold (Bidirectional Below This)",
+                    value: $controller.gameEngine.ratchetTurnThresholdDeg,
+                    range: 0.6...3.5,
+                    unit: "°"
+                )
+                sliderRow(
+                    title: "Outer Hold Continuous 360° Spin Angle",
+                    value: $controller.gameEngine.outerContinuousTurnAngleDeg,
+                    range: 2.2...7.0,
+                    unit: "°"
+                )
                 sliderRow(
                     title: "Accela Micro-Gain Amplification (Outer Sweep)",
                     value: $controller.gameEngine.microGainFactor,

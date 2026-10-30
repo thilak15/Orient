@@ -304,6 +304,9 @@ public final class HeadphoneMotionController: NSObject, @unchecked Sendable {
                 worker.gameEngine.isADSActive = updated.isADSActive
                 worker.gameEngine.adsMultiplier = updated.adsMultiplier
                 worker.gameEngine.inGameSensitivityMultiplier = updated.inGameSensitivityMultiplier
+                worker.gameEngine.autoRatchetYawEnabled = updated.autoRatchetYawEnabled
+                worker.gameEngine.ratchetTurnThresholdDeg = updated.ratchetTurnThresholdDeg
+                worker.gameEngine.outerContinuousTurnAngleDeg = updated.outerContinuousTurnAngleDeg
                 worker.gameEngine.microGainFactor = updated.microGainFactor
                 worker.gameEngine.fovealRadiusDeg = updated.fovealRadiusDeg
                 worker.gameEngine.nonLinearCurveExponent = updated.nonLinearCurveExponent
