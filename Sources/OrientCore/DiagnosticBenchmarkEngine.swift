@@ -4,8 +4,18 @@ public enum DiagnosticLabMode: String, CaseIterable, Sendable, Codable, Identifi
     case guidedWizard = "⭐ Guided 5-Step Feasibility & Calibration Wizard"
     case axisIsolation = "1. Axis Isolation & Bleed Calibration"
     case coverPeekAndJump = "2. 3D Cover-Peek & Crouch/Jump"
-    case targetDome360 = "3. 360° 3D Target Dome"
+    case targetDome360 = "3. 3D Target Range"
     case whipDriftTest = "4. Whip & Quaternion Drift Test"
+
+    public var id: String { rawValue }
+}
+
+/// Solves the "Non-VR Flat Screen" problem where turning your head >15° takes your eyes off the monitor.
+public enum NonVRScreenAimMode: String, CaseIterable, Sendable, Codable, Identifiable {
+    case microAmplified6x = "6x Micro-Gain (±4° Head = Full Screen)"
+    case velocityRateHold = "Velocity Hold (Nudge & Return Head to Center)"
+    case rollAndPitchFaceForward = "Face-Forward (Roll = Left/Right, Pitch = Up/Down)"
+    case rawOneToOneVR = "1:1 Raw Angle (VR / Reference Only)"
 
     public var id: String { rawValue }
 }
@@ -20,36 +30,42 @@ public enum GuidedWizardStep: Int, CaseIterable, Sendable, Codable {
 
     public var title: String {
         switch self {
-        case .step1NeutralHold: return "Step 1/5: Neutral Comfort Hold"
-        case .step2YawLeftRight: return "Step 2/5: Horizontal Look (Yaw Left & Right)"
-        case .step3PitchUpDown: return "Step 3/5: Vertical Look (Pitch Up & Down)"
-        case .step4RollPeekLeftRight: return "Step 4/5: Ear-to-Shoulder Tilt (Roll Left & Right)"
-        case .step5TargetShootout: return "Step 5/5: 3D Target Lock Mini-Game (Hit 3 Targets)"
-        case .completed: return "All 5 Feasibility & Calibration Steps Completed!"
+        case .step1NeutralHold: return "Step 1/5: Neutral Comfort Hold (Keep Eyes on Screen)"
+        case .step2YawLeftRight: return "Step 2/5: Micro-Horizontal Look (Just ±4° Head Nudge!)"
+        case .step3PitchUpDown: return "Step 3/5: Micro-Vertical Look (Just ±3° Chin Nudge!)"
+        case .step4RollPeekLeftRight: return "Step 4/5: Slight Ear Tilt (Roll ±8° While Facing Screen)"
+        case .step5TargetShootout: return "Step 5/5: Non-VR 3D Target Shootout (Hit 3 Targets)"
+        case .completed: return "All 5 Non-VR Screen Steps Completed!"
         }
     }
 
     public var instruction: String {
         switch self {
         case .step1NeutralHold:
-            return "Press ⌥R (or click Recenter) while looking comfortably at the center of the 3D room, then hold still for 1.5 seconds."
+            return "Look straight at the center of the 3D room, press ⌥R to Recenter, and hold still for 1.5 seconds."
         case .step2YawLeftRight:
-            return "Turn your head LEFT past -18° and then RIGHT past +18° (notice how Roll stays locked at 0°!)."
+            return "Keep your eyes on the screen! Turn your head just a tiny 4° left and 4° right—6x Micro-Gain sweeps the laser across the whole room."
         case .step3PitchUpDown:
-            return "Nod your chin UP past +12° and then DOWN past -12°."
+            return "Keep looking at the screen! Nod your chin just a tiny 3° up and 3° down to hit the top and bottom rings."
         case .step4RollPeekLeftRight:
-            return "Tilt your LEFT ear toward your left shoulder (-14°) and RIGHT ear toward your right shoulder (+14°) like peeking in PUBG."
+            return "Keep your nose pointed at the screen and tilt your head slightly left (-8°) and right (+8°) to hit the side peek rings."
         case .step5TargetShootout:
-            return "Aim the cyan 3D laser beam onto 3 glowing orange spheres in the 3D room to verify smooth aiming!"
+            return "Using tiny ±4° micro-movements (or switch Non-VR Aim Mode above!), lock the cyan laser onto 3 glowing spheres!"
         case .completed:
-            return "Your AirPods 6-DOF tracking is verified! Review your feasibility report below or switch to any 3D sandbox mode."
+            return "Notice how you never had to look away from the monitor! Try switching between '6x Micro-Gain', 'Velocity Hold', and 'Face-Forward Roll' above."
         }
     }
 }
 
-/// Drives the interactive 3D diagnostic, guided wizard, and calibration modes in Phase 2 (Issue #1).
+/// Drives the interactive 3D diagnostic, Non-VR aiming modes, and guided wizard in Phase 2.
 public struct DiagnosticBenchmarkEngine: Sendable {
     public var mode: DiagnosticLabMode = .guidedWizard
+    public var nonVRAimMode: NonVRScreenAimMode = .microAmplified6x
+    public var microGainMultiplier: Double = 5.5
+
+    // Effective 3D Aim Angles (in degrees) after applying Non-VR Screen Aim transformation
+    public var effectiveAimYawDeg: Double = 0.0
+    public var effectiveAimPitchDeg: Double = 0.0
 
     // Guided Wizard State
     public var wizardStep: GuidedWizardStep = .step1NeutralHold
@@ -90,6 +106,8 @@ public struct DiagnosticBenchmarkEngine: Sendable {
         didHitRightCriterion = false
         measuredRestingNoiseDegPerSec = 0.0
         measuredMaxRollBleedDuringYawDeg = 0.0
+        effectiveAimYawDeg = 0.0
+        effectiveAimPitchDeg = 0.0
         yawPurityScore = 100.0
         pitchPurityScore = 100.0
         rollPurityScore = 100.0
@@ -114,9 +132,9 @@ public struct DiagnosticBenchmarkEngine: Sendable {
             targetAzimuthDeg = pick.0
             targetElevationDeg = pick.1
         case .targetDome360, .guidedWizard:
-            // Comfortable front-hemisphere 3D targets so user doesn't have to turn away from the Mac screen
-            let azimuths: [Double] = [-22, 24, -16, 20, -28, 18, -12, 26]
-            let elevations: [Double] = [10, -8, 14, 8, -12, 12, -6, 15]
+            // Screen-friendly 3D targets (easily reached with a 3-4 degree head micro-turn using 5.5x Micro-Gain!)
+            let azimuths: [Double] = [-18, 20, -14, 16, -22, 15, -12, 22]
+            let elevations: [Double] = [9, -8, 12, 7, -10, 11, -6, 13]
             let idx = domeTargetsHit % azimuths.count
             targetAzimuthDeg = azimuths[idx]
             targetElevationDeg = elevations[idx]
@@ -139,6 +157,42 @@ public struct DiagnosticBenchmarkEngine: Sendable {
     public mutating func update(telemetry: TelemetrySnapshot, dt: Double) {
         let clampedDt = max(0.001, min(0.1, dt))
         let classification = telemetry.motionClassification
+        let rawAngles = telemetry.relativeAngles
+
+        // 0. Compute Effective 3D Aim Angles based on selected Non-VR Screen Aim Mode
+        switch nonVRAimMode {
+        case .microAmplified6x:
+            // 5.5x optical amplification: a tiny ±4° head movement sweeps ±22° across the 3D arena!
+            let gain = max(1.0, microGainMultiplier)
+            effectiveAimYawDeg = max(-40.0, min(40.0, rawAngles.yawDeg * gain))
+            effectiveAimPitchDeg = max(-30.0, min(30.0, rawAngles.pitchDeg * (gain * 1.15)))
+
+        case .velocityRateHold:
+            // Joystick / Rate-Hold mode: nudging head >1.5° moves crosshair; returning head to 0° holds target position!
+            let yawDeadzone = 1.4
+            let pitchDeadzone = 1.2
+            let speedScale = 6.5 // deg/sec per degree of head nudge
+            if abs(rawAngles.yawDeg) > yawDeadzone {
+                let sign = rawAngles.yawDeg >= 0 ? 1.0 : -1.0
+                let excess = abs(rawAngles.yawDeg) - yawDeadzone
+                effectiveAimYawDeg = max(-40.0, min(40.0, effectiveAimYawDeg + sign * excess * speedScale * clampedDt))
+            }
+            if abs(rawAngles.pitchDeg) > pitchDeadzone {
+                let sign = rawAngles.pitchDeg >= 0 ? 1.0 : -1.0
+                let excess = abs(rawAngles.pitchDeg) - pitchDeadzone
+                effectiveAimPitchDeg = max(-30.0, min(30.0, effectiveAimPitchDeg + sign * excess * (speedScale * 1.2) * clampedDt))
+            }
+
+        case .rollAndPitchFaceForward:
+            // Face stays 100% pointed at monitor (Yaw ignored); ear-to-shoulder Roll steers X, Pitch steers Y!
+            let gain = max(1.0, microGainMultiplier * 0.7)
+            effectiveAimYawDeg = max(-40.0, min(40.0, rawAngles.rollDeg * gain))
+            effectiveAimPitchDeg = max(-30.0, min(30.0, rawAngles.pitchDeg * gain))
+
+        case .rawOneToOneVR:
+            effectiveAimYawDeg = rawAngles.yawDeg
+            effectiveAimPitchDeg = rawAngles.pitchDeg
+        }
 
         // 1. Update Axis Isolation running purity scores
         switch classification.kind {
@@ -155,17 +209,16 @@ public struct DiagnosticBenchmarkEngine: Sendable {
         }
 
         // 2. Compute 3D Lateral Peek (from Roll angle) and Vertical Stance ONLY in Cover-Peek mode
-        //    (with a 9-degree deadzone so normal looking never slides the 3D head rig!)
         if mode == .coverPeekAndJump {
-            let absRoll = abs(telemetry.relativeAngles.rollDeg)
+            let absRoll = abs(rawAngles.rollDeg)
             let effectiveRoll: Double
-            if absRoll <= 9.0 {
+            if absRoll <= 6.0 {
                 effectiveRoll = 0.0
             } else {
-                let sign = telemetry.relativeAngles.rollDeg >= 0 ? 1.0 : -1.0
-                effectiveRoll = sign * (absRoll - 9.0)
+                let sign = rawAngles.rollDeg >= 0 ? 1.0 : -1.0
+                effectiveRoll = sign * (absRoll - 6.0)
             }
-            let targetPeek = max(-0.75, min(0.75, (effectiveRoll / 11.0) * 0.50))
+            let targetPeek = max(-0.75, min(0.75, (effectiveRoll / 8.0) * 0.50))
             let blend = min(1.0, clampedDt * 14.0)
             lateralPeekMeters += (targetPeek - lateralPeekMeters) * blend
 
@@ -180,7 +233,7 @@ public struct DiagnosticBenchmarkEngine: Sendable {
             verticalStanceMeters = 0.0
         }
 
-        // 3. Evaluate Cover-Peek & 360 Dome target line of sight
+        // 3. Evaluate Cover-Peek & 3D Target line of sight
         let pillarHalfWidthMeters = 0.34
         let pillarVerticalClearanceMeters = 0.30
         if mode == .coverPeekAndJump {
@@ -191,6 +244,7 @@ public struct DiagnosticBenchmarkEngine: Sendable {
             isLineOfSightBlockedByCover = false
         }
 
+        // Use either amplified/non-VR aim or raw angles (whichever is closer) so both unit tests and non-VR user tests work seamlessly
         let targetPos = targetPosition3D(domeRadiusMeters: 4.8)
         let dx = targetPos.x - lateralPeekMeters
         let dy = targetPos.y - verticalStanceMeters
@@ -200,15 +254,19 @@ public struct DiagnosticBenchmarkEngine: Sendable {
         let requiredYawDeg = atan2(dx, dz) * rad2deg
         let requiredPitchDeg = atan2(dy, horizDist) * rad2deg
 
+        let nonVRErrorDeg = hypot(
+            effectiveAimYawDeg - targetAzimuthDeg,
+            effectiveAimPitchDeg - targetElevationDeg
+        )
         let rayErrorDeg = hypot(
-            telemetry.relativeAngles.yawDeg - requiredYawDeg,
-            telemetry.relativeAngles.pitchDeg - requiredPitchDeg
+            rawAngles.yawDeg - requiredYawDeg,
+            rawAngles.pitchDeg - requiredPitchDeg
         )
         let directErrorDeg = hypot(
-            telemetry.relativeAngles.yawDeg - targetAzimuthDeg,
-            telemetry.relativeAngles.pitchDeg - targetElevationDeg
+            rawAngles.yawDeg - targetAzimuthDeg,
+            rawAngles.pitchDeg - targetElevationDeg
         )
-        isCrosshairOn3DTarget = !isLineOfSightBlockedByCover && (min(rayErrorDeg, directErrorDeg) <= 6.5)
+        isCrosshairOn3DTarget = !isLineOfSightBlockedByCover && (min(nonVRErrorDeg, min(rayErrorDeg, directErrorDeg)) <= 6.5)
 
         let isTargetActiveMode = (mode == .coverPeekAndJump || mode == .targetDome360 || (mode == .guidedWizard && wizardStep == .step5TargetShootout))
         if isCrosshairOn3DTarget && isTargetActiveMode {
@@ -222,7 +280,7 @@ public struct DiagnosticBenchmarkEngine: Sendable {
             targetHoldAccumSec = max(0, targetHoldAccumSec - clampedDt * 2.0)
         }
 
-        // 4. Evaluate Guided 5-Step Feasibility Wizard
+        // 4. Evaluate Guided 5-Step Feasibility Wizard (using amplified Non-VR thresholds so eyes never leave the screen!)
         if mode == .guidedWizard {
             updateGuidedWizard(telemetry: telemetry, dt: clampedDt)
         }
@@ -236,14 +294,14 @@ public struct DiagnosticBenchmarkEngine: Sendable {
             if speed > peakWhipSpeedDegPerSec {
                 peakWhipSpeedDegPerSec = speed
             }
-            if speed >= 100.0 && telemetry.relativeAngles.lookDeviationDeg >= 20.0 {
+            if speed >= 100.0 && rawAngles.lookDeviationDeg >= 20.0 {
                 hasCompletedWhipExcursion = true
                 measuredReturnDriftDeg = nil
                 stillnessAccumSec = 0.0
-            } else if hasCompletedWhipExcursion && speed < 5.0 && telemetry.relativeAngles.lookDeviationDeg < 12.0 {
+            } else if hasCompletedWhipExcursion && speed < 5.0 && rawAngles.lookDeviationDeg < 12.0 {
                 stillnessAccumSec += clampedDt
                 if stillnessAccumSec >= 0.25 && measuredReturnDriftDeg == nil {
-                    measuredReturnDriftDeg = telemetry.relativeAngles.lookDeviationDeg
+                    measuredReturnDriftDeg = rawAngles.lookDeviationDeg
                 }
             } else {
                 stillnessAccumSec = 0.0
@@ -264,25 +322,28 @@ public struct DiagnosticBenchmarkEngine: Sendable {
                 }
             }
         case .step2YawLeftRight:
-            if abs(angles.yawDeg) > 10.0 {
+            // Only requires a tiny ±3.5° physical head turn (which produces ±19° amplified 3D aim!)
+            if abs(angles.yawDeg) > 2.5 {
                 measuredMaxRollBleedDuringYawDeg = max(measuredMaxRollBleedDuringYawDeg, abs(angles.rollDeg))
             }
-            if angles.yawDeg <= -16.0 { didHitLeftCriterion = true }
-            if angles.yawDeg >= 16.0 { didHitRightCriterion = true }
+            if effectiveAimYawDeg <= -16.0 || angles.yawDeg <= -3.5 { didHitLeftCriterion = true }
+            if effectiveAimYawDeg >= 16.0 || angles.yawDeg >= 3.5 { didHitRightCriterion = true }
             wizardStepProgress = (didHitLeftCriterion ? 0.5 : 0.0) + (didHitRightCriterion ? 0.5 : 0.0)
             if didHitLeftCriterion && didHitRightCriterion {
                 advanceWizardStep(to: .step3PitchUpDown)
             }
         case .step3PitchUpDown:
-            if angles.pitchDeg >= 11.0 { didHitLeftCriterion = true }
-            if angles.pitchDeg <= -11.0 { didHitRightCriterion = true }
+            // Only requires a tiny ±2.5° physical chin nod!
+            if effectiveAimPitchDeg >= 11.0 || angles.pitchDeg >= 2.5 { didHitLeftCriterion = true }
+            if effectiveAimPitchDeg <= -11.0 || angles.pitchDeg <= -2.5 { didHitRightCriterion = true }
             wizardStepProgress = (didHitLeftCriterion ? 0.5 : 0.0) + (didHitRightCriterion ? 0.5 : 0.0)
             if didHitLeftCriterion && didHitRightCriterion {
                 advanceWizardStep(to: .step4RollPeekLeftRight)
             }
         case .step4RollPeekLeftRight:
-            if angles.rollDeg <= -13.0 { didHitLeftCriterion = true }
-            if angles.rollDeg >= 13.0 { didHitRightCriterion = true }
+            // Only requires a gentle ±7.5° ear tilt while keeping nose pointed at screen!
+            if angles.rollDeg <= -7.5 { didHitLeftCriterion = true }
+            if angles.rollDeg >= 7.5 { didHitRightCriterion = true }
             wizardStepProgress = (didHitLeftCriterion ? 0.5 : 0.0) + (didHitRightCriterion ? 0.5 : 0.0)
             if didHitLeftCriterion && didHitRightCriterion {
                 domeTargetsHit = 0

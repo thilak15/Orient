@@ -9,58 +9,95 @@ struct Spatial3DLabView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            // Top Mode Selector + Instant Axis & Roll Stabilizer Bar
-            HStack(spacing: 10) {
-                Picker("3D Test Mode", selection: $controller.diagnosticEngine.mode) {
-                    ForEach(DiagnosticLabMode.allCases) { mode in
-                        Text(mode.rawValue).tag(mode)
+            // Top Mode Selector + Non-VR Screen Aim Mode Bar
+            VStack(spacing: 8) {
+                HStack(spacing: 10) {
+                    Picker("3D Test Mode", selection: $controller.diagnosticEngine.mode) {
+                        ForEach(DiagnosticLabMode.allCases) { mode in
+                            Text(mode.rawValue).tag(mode)
+                        }
                     }
+                    .frame(maxWidth: 310)
+                    .onChange(of: controller.diagnosticEngine.mode) { _, _ in
+                        controller.diagnosticEngine.resetCurrentMode()
+                        controller.diagnosticEngine.spawnNext3DTarget()
+                    }
+
+                    Picker("View", selection: $useFirstPersonCamera) {
+                        Text("3rd-Person Rig").tag(false)
+                        Text("1st-Person POV").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 190)
+
+                    Divider().frame(height: 20)
+
+                    Toggle("Yaw", isOn: $controller.config.enableYawAxis)
+                        .toggleStyle(.button)
+                        .controlSize(.small)
+                    Toggle("Pitch", isOn: $controller.config.enablePitchAxis)
+                        .toggleStyle(.button)
+                        .controlSize(.small)
+                    Toggle("Roll", isOn: $controller.config.enableRollAxis)
+                        .toggleStyle(.button)
+                        .controlSize(.small)
+                    Toggle("Stabilize 3D Roll", isOn: $lockVisualRollWhenAiming)
+                        .toggleStyle(.button)
+                        .controlSize(.small)
+
+                    Spacer()
+
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(classificationColor(controller.telemetry.motionClassification.kind))
+                            .frame(width: 9, height: 9)
+                        Text(controller.telemetry.motionClassification.kind.rawValue)
+                            .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(classificationColor(controller.telemetry.motionClassification.kind).opacity(0.18))
+                    .foregroundStyle(classificationColor(controller.telemetry.motionClassification.kind))
+                    .clipShape(Capsule())
                 }
-                .frame(maxWidth: 320)
-                .onChange(of: controller.diagnosticEngine.mode) { _, _ in
-                    controller.diagnosticEngine.resetCurrentMode()
-                    controller.diagnosticEngine.spawnNext3DTarget()
+
+                // Non-VR Flat-Screen Solution Bar (Solves looking away from monitor!)
+                HStack(spacing: 14) {
+                    Label("Non-VR Screen Aim:", systemImage: "display")
+                        .font(.caption.bold())
+                        .foregroundStyle(.cyan)
+
+                    Picker("", selection: $controller.diagnosticEngine.nonVRAimMode) {
+                        ForEach(NonVRScreenAimMode.allCases) { aimMode in
+                            Text(aimMode.rawValue).tag(aimMode)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 340)
+
+                    if controller.diagnosticEngine.nonVRAimMode == .microAmplified6x ||
+                       controller.diagnosticEngine.nonVRAimMode == .rollAndPitchFaceForward {
+                        HStack(spacing: 6) {
+                            Text("Amplification:")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Slider(value: $controller.diagnosticEngine.microGainMultiplier, in: 2.0...12.0)
+                                .frame(width: 110)
+                            Text(String(format: "%.1fx (±%.0f° Head = Full Screen)", controller.diagnosticEngine.microGainMultiplier, 22.0 / controller.diagnosticEngine.microGainMultiplier))
+                                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                .foregroundStyle(.yellow)
+                        }
+                    } else if controller.diagnosticEngine.nonVRAimMode == .velocityRateHold {
+                        Button("Center Crosshair") {
+                            controller.diagnosticEngine.effectiveAimYawDeg = 0
+                            controller.diagnosticEngine.effectiveAimPitchDeg = 0
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
+
+                    Spacer()
                 }
-
-                Picker("View", selection: $useFirstPersonCamera) {
-                    Text("3rd-Person Rig").tag(false)
-                    Text("1st-Person POV").tag(true)
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 200)
-
-                Divider().frame(height: 20)
-
-                // Instant Per-Axis Toggles so user can isolate Yaw, Pitch, or Roll immediately
-                Toggle("Yaw", isOn: $controller.config.enableYawAxis)
-                    .toggleStyle(.button)
-                    .controlSize(.small)
-                Toggle("Pitch", isOn: $controller.config.enablePitchAxis)
-                    .toggleStyle(.button)
-                    .controlSize(.small)
-                Toggle("Roll", isOn: $controller.config.enableRollAxis)
-                    .toggleStyle(.button)
-                    .controlSize(.small)
-                Toggle("Stabilize 3D Roll", isOn: $lockVisualRollWhenAiming)
-                    .toggleStyle(.button)
-                    .controlSize(.small)
-                    .help("Keeps the 3D head horizon level while aiming with Yaw/Pitch so it only rolls during intentional Roll tests.")
-
-                Spacer()
-
-                // Live Motion Classification Pill
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(classificationColor(controller.telemetry.motionClassification.kind))
-                        .frame(width: 9, height: 9)
-                    Text(controller.telemetry.motionClassification.kind.rawValue)
-                        .font(.system(size: 11, weight: .bold, design: .monospaced))
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(classificationColor(controller.telemetry.motionClassification.kind).opacity(0.18))
-                .foregroundStyle(classificationColor(controller.telemetry.motionClassification.kind))
-                .clipShape(Capsule())
             }
             .padding(10)
             .background(Color.black.opacity(0.28))
@@ -588,14 +625,15 @@ private struct SpatialSceneKitContainer: NSViewRepresentable {
         nsView.pointOfView = useFirstPersonCamera ? coord.firstPersonCameraNode : coord.thirdPersonCameraNode
 
         let deg2rad = CGFloat.pi / 180.0
-        let yawRad = CGFloat(-telemetry.relativeAngles.yawDeg) * deg2rad
-        let pitchRad = CGFloat(telemetry.relativeAngles.pitchDeg) * deg2rad
+        // Use amplified / Non-VR effective aim angles so user only moves head ±3-4° while keeping eyes on the monitor!
+        let yawRad = CGFloat(-benchmark.effectiveAimYawDeg) * deg2rad
+        let pitchRad = CGFloat(benchmark.effectiveAimPitchDeg) * deg2rad
 
         // Only apply full visual Roll to the 3D head when testing Roll (or when Stabilize 3D Roll is unchecked)
         let isRollFocusedStep = (benchmark.mode == .coverPeekAndJump) ||
             (benchmark.mode == .guidedWizard && benchmark.wizardStep == .step4RollPeekLeftRight) ||
             !lockVisualRollWhenAiming
-        let effectiveRollDeg = isRollFocusedStep ? telemetry.relativeAngles.rollDeg : (telemetry.relativeAngles.rollDeg * 0.15)
+        let effectiveRollDeg = isRollFocusedStep ? telemetry.relativeAngles.rollDeg : (telemetry.relativeAngles.rollDeg * 0.12)
         let rollRad = CGFloat(-effectiveRollDeg) * deg2rad
 
         // 1. Update 3D Head Rig Position & Orientation
