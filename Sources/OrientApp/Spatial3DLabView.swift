@@ -5,28 +5,46 @@ import OrientCore
 struct Spatial3DLabView: View {
     @Bindable var controller: HeadphoneMotionController
     @State private var useFirstPersonCamera: Bool = false
+    @State private var lockVisualRollWhenAiming: Bool = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            // Top Mode Selector & Live Disambiguation Classifier Bar
-            HStack(spacing: 12) {
-                Picker("3D Diagnostic Mode", selection: $controller.diagnosticEngine.mode) {
+            // Top Mode Selector + Instant Axis & Roll Stabilizer Bar
+            HStack(spacing: 10) {
+                Picker("3D Test Mode", selection: $controller.diagnosticEngine.mode) {
                     ForEach(DiagnosticLabMode.allCases) { mode in
                         Text(mode.rawValue).tag(mode)
                     }
                 }
-                .frame(maxWidth: 340)
+                .frame(maxWidth: 320)
                 .onChange(of: controller.diagnosticEngine.mode) { _, _ in
                     controller.diagnosticEngine.resetCurrentMode()
                     controller.diagnosticEngine.spawnNext3DTarget()
                 }
 
-                Picker("Camera", selection: $useFirstPersonCamera) {
-                    Text("3rd-Person 6-DOF Rig").tag(false)
-                    Text("1st-Person Tactical").tag(true)
+                Picker("View", selection: $useFirstPersonCamera) {
+                    Text("3rd-Person Rig").tag(false)
+                    Text("1st-Person POV").tag(true)
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 240)
+                .frame(width: 200)
+
+                Divider().frame(height: 20)
+
+                // Instant Per-Axis Toggles so user can isolate Yaw, Pitch, or Roll immediately
+                Toggle("Yaw", isOn: $controller.config.enableYawAxis)
+                    .toggleStyle(.button)
+                    .controlSize(.small)
+                Toggle("Pitch", isOn: $controller.config.enablePitchAxis)
+                    .toggleStyle(.button)
+                    .controlSize(.small)
+                Toggle("Roll", isOn: $controller.config.enableRollAxis)
+                    .toggleStyle(.button)
+                    .controlSize(.small)
+                Toggle("Stabilize 3D Roll", isOn: $lockVisualRollWhenAiming)
+                    .toggleStyle(.button)
+                    .controlSize(.small)
+                    .help("Keeps the 3D head horizon level while aiming with Yaw/Pitch so it only rolls during intentional Roll tests.")
 
                 Spacer()
 
@@ -36,10 +54,10 @@ struct Spatial3DLabView: View {
                         .fill(classificationColor(controller.telemetry.motionClassification.kind))
                         .frame(width: 9, height: 9)
                     Text(controller.telemetry.motionClassification.kind.rawValue)
-                        .font(.system(size: 12, weight: .bold, design: .monospaced))
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
                 .background(classificationColor(controller.telemetry.motionClassification.kind).opacity(0.18))
                 .foregroundStyle(classificationColor(controller.telemetry.motionClassification.kind))
                 .clipShape(Capsule())
@@ -48,7 +66,7 @@ struct Spatial3DLabView: View {
             .background(Color.black.opacity(0.28))
             .clipShape(RoundedRectangle(cornerRadius: 10))
 
-            // Mode-Specific Telemetry & Calibration Strip
+            // Mode-Specific Interactive Strip (Guided Wizard OR Diagnostic Metrics)
             modeMetricsStrip
 
             // Interactive 3D SceneKit Viewport + HUD Legend
@@ -56,7 +74,8 @@ struct Spatial3DLabView: View {
                 SpatialSceneKitContainer(
                     telemetry: controller.telemetry,
                     benchmark: controller.diagnosticEngine,
-                    useFirstPersonCamera: useFirstPersonCamera
+                    useFirstPersonCamera: useFirstPersonCamera,
+                    lockVisualRollWhenAiming: lockVisualRollWhenAiming
                 )
                 .clipShape(RoundedRectangle(cornerRadius: 12))
                 .overlay(
@@ -64,7 +83,7 @@ struct Spatial3DLabView: View {
                         .stroke(Color.white.opacity(0.14), lineWidth: 1)
                 )
 
-                // Vector Legend & Live 6-DOF Readout Overlay
+                // Bottom Vector Legend & Live 6-DOF Readout Overlay
                 HStack(alignment: .bottom) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("3D VECTOR LEGEND")
@@ -87,18 +106,19 @@ struct Spatial3DLabView: View {
 
                     VStack(alignment: .trailing, spacing: 3) {
                         Text(String(
-                            format: "Purity: %.0f%%  |  True Linear: %.2fG  |  Cancelled Rot Ear-Accel: %.2fG",
-                            controller.telemetry.motionClassification.axisPurityPercent,
-                            controller.telemetry.motionClassification.compensatedLinearAccel.magnitude,
-                            controller.telemetry.motionClassification.inducedRotationalAccel.magnitude
+                            format: "Yaw: %+.1f°  |  Pitch: %+.1f°  |  Roll: %+.1f°  |  Purity: %.0f%%",
+                            controller.telemetry.relativeAngles.yawDeg,
+                            controller.telemetry.relativeAngles.pitchDeg,
+                            controller.telemetry.relativeAngles.rollDeg,
+                            controller.telemetry.motionClassification.axisPurityPercent
                         ))
-                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
                         .foregroundStyle(.mint)
 
                         Text(String(
-                            format: "3D Peek Offset: %+.2fm  |  Vertical Stance: %+.2fm  |  Decouple (R→Y: %+.2f, R→P: %+.2f)",
+                            format: "True Linear: %.2fG  |  Peek: %+.2fm  |  Decouple (R→Y: %+.2f, R→P: %+.2f)",
+                            controller.telemetry.motionClassification.compensatedLinearAccel.magnitude,
                             controller.diagnosticEngine.lateralPeekMeters,
-                            controller.diagnosticEngine.verticalStanceMeters,
                             controller.config.decouplingMatrix.rollToYawCoupling,
                             controller.config.decouplingMatrix.rollToPitchCoupling
                         ))
@@ -118,6 +138,9 @@ struct Spatial3DLabView: View {
     @ViewBuilder
     private var modeMetricsStrip: some View {
         switch controller.diagnosticEngine.mode {
+        case .guidedWizard:
+            guidedWizardBanner
+
         case .axisIsolation:
             HStack(spacing: 16) {
                 statPill(title: "YAW PURITY", value: String(format: "%.0f%%", controller.diagnosticEngine.yawPurityScore), color: .cyan)
@@ -158,7 +181,7 @@ struct Spatial3DLabView: View {
                     color: controller.diagnosticEngine.isLineOfSightBlockedByCover ? .red : .green
                 )
                 statPill(
-                    title: "LATERAL PEEK (ROLL)",
+                    title: "LATERAL PEEK (ROLL >9°)",
                     value: String(format: "%+.2f m", controller.diagnosticEngine.lateralPeekMeters),
                     color: .yellow
                 )
@@ -173,7 +196,7 @@ struct Spatial3DLabView: View {
                     color: .mint
                 )
                 Spacer()
-                Text("Tilt ear-to-shoulder (Roll) to peek left/right around the red 3D pillar or nod/jump vertically to clear cover!")
+                Text("Tilt ear-to-shoulder (>10° Roll) to slide around the red 3D pillar or nod/jump vertically to clear cover!")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -241,6 +264,86 @@ struct Spatial3DLabView: View {
         }
     }
 
+    // MARK: - Guided 5-Step Feasibility & Calibration Banner
+
+    private var guidedWizardBanner: some View {
+        let step = controller.diagnosticEngine.wizardStep
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Label(step.title, systemImage: step == .completed ? "checkmark.seal.fill" : "flag.checkered")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(step == .completed ? .green : .cyan)
+
+                Spacer()
+
+                if step == .step2YawLeftRight || step == .step3PitchUpDown || step == .step4RollPeekLeftRight {
+                    HStack(spacing: 10) {
+                        Label(
+                            step == .step3PitchUpDown ? "Up (+12°)" : "Left Target",
+                            systemImage: controller.diagnosticEngine.didHitLeftCriterion ? "checkmark.circle.fill" : "circle"
+                        )
+                        .font(.caption.bold())
+                        .foregroundStyle(controller.diagnosticEngine.didHitLeftCriterion ? .green : .secondary)
+
+                        Label(
+                            step == .step3PitchUpDown ? "Down (-12°)" : "Right Target",
+                            systemImage: controller.diagnosticEngine.didHitRightCriterion ? "checkmark.circle.fill" : "circle"
+                        )
+                        .font(.caption.bold())
+                        .foregroundStyle(controller.diagnosticEngine.didHitRightCriterion ? .green : .secondary)
+                    }
+                } else if step == .step5TargetShootout {
+                    Text("Targets Locked: \(controller.diagnosticEngine.domeTargetsHit) / 3")
+                        .font(.caption.bold())
+                        .foregroundStyle(.orange)
+                }
+
+                ProgressView(value: controller.diagnosticEngine.wizardStepProgress)
+                    .frame(width: 110)
+                    .tint(.green)
+
+                if step != .completed {
+                    Button("Skip Step →") {
+                        if let next = GuidedWizardStep(rawValue: step.rawValue + 1) {
+                            if next == .step5TargetShootout {
+                                controller.diagnosticEngine.spawnNext3DTarget()
+                            }
+                            controller.diagnosticEngine.advanceWizardStep(to: next)
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+
+                Button("Restart Wizard") {
+                    controller.recenterPose()
+                    controller.diagnosticEngine.resetCurrentMode()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+
+            HStack {
+                Text(step.instruction)
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.9))
+                Spacer()
+                if step == .completed {
+                    Text(String(
+                        format: "Resting Noise: %.1f°/s  •  Yaw→Roll Bleed: %.1f°  •  Verdict: Ready for 120Hz Aim + Q/E Roll Peek!",
+                        controller.diagnosticEngine.measuredRestingNoiseDegPerSec,
+                        controller.diagnosticEngine.measuredMaxRollBleedDuringYawDeg
+                    ))
+                    .font(.caption.bold())
+                    .foregroundStyle(.mint)
+                }
+            }
+        }
+        .padding(10)
+        .background(Color.cyan.opacity(0.10))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
     private func classificationColor(_ kind: MotionKind) -> Color {
         switch kind {
         case .stationary: return .secondary
@@ -283,6 +386,7 @@ private struct SpatialSceneKitContainer: NSViewRepresentable {
     var telemetry: TelemetrySnapshot
     var benchmark: DiagnosticBenchmarkEngine
     var useFirstPersonCamera: Bool
+    var lockVisualRollWhenAiming: Bool
 
     final class Coordinator {
         let scene = SCNScene()
@@ -295,6 +399,8 @@ private struct SpatialSceneKitContainer: NSViewRepresentable {
         let gravityVectorNode = SCNNode()
         let coverPillarNode = SCNNode()
         let targetSphereNode = SCNNode()
+        let leftGuideGateNode = SCNNode()
+        let rightGuideGateNode = SCNNode()
 
         init() {
             setupScene()
@@ -362,14 +468,12 @@ private struct SpatialSceneKitContainer: NSViewRepresentable {
             let headMesh = SCNNode(geometry: headSphere)
             headRigNode.addChildNode(headMesh)
 
-            // Front Visor (shows facing direction clearly)
             let visor = SCNBox(width: 0.38, height: 0.12, length: 0.12, chamferRadius: 0.03)
             visor.firstMaterial?.diffuse.contents = NSColor.systemCyan
             let visorNode = SCNNode(geometry: visor)
             visorNode.position = SCNVector3(0, 0.04, -0.22)
             headRigNode.addChildNode(visorNode)
 
-            // Left & Right AirPods Models on Ears
             for side in [-1.0, 1.0] {
                 let pod = SCNCapsule(capRadius: 0.045, height: 0.16)
                 pod.firstMaterial?.diffuse.contents = NSColor.white
@@ -378,12 +482,10 @@ private struct SpatialSceneKitContainer: NSViewRepresentable {
                 headRigNode.addChildNode(podNode)
             }
 
-            // Local Coordinate Axes attached to Head Rig (+X Pitch Red, +Y Roll Green, +Z Yaw Cyan)
             headRigNode.addChildNode(makeAxisRod(length: 0.75, color: .systemRed, axis: .x))
             headRigNode.addChildNode(makeAxisRod(length: 0.75, color: .systemGreen, axis: .y))
             headRigNode.addChildNode(makeAxisRod(length: 0.75, color: .systemCyan, axis: .z))
 
-            // Forward Gaze Laser Beam
             let laserCyl = SCNCylinder(radius: 0.012, height: 5.2)
             laserCyl.firstMaterial?.diffuse.contents = NSColor.systemCyan
             laserCyl.firstMaterial?.emission.contents = NSColor.systemCyan
@@ -392,7 +494,6 @@ private struct SpatialSceneKitContainer: NSViewRepresentable {
             gazeLaserNode.eulerAngles = SCNVector3(CGFloat.pi / 2, 0, 0)
             headRigNode.addChildNode(gazeLaserNode)
 
-            // 1st-Person Camera inside Head Rig
             let cam1 = SCNCamera()
             cam1.fieldOfView = 68
             cam1.zNear = 0.05
@@ -403,7 +504,7 @@ private struct SpatialSceneKitContainer: NSViewRepresentable {
 
             scene.rootNode.addChildNode(headRigNode)
 
-            // Dynamic 3D Vectors Attached to Head Rig: Angular Velocity (Orange), Linear Accel (Pink), Gravity (Blue)
+            // Dynamic 3D Vectors Attached to Head Rig
             let omegaCyl = SCNCylinder(radius: 0.020, height: 0.55)
             omegaCyl.firstMaterial?.diffuse.contents = NSColor.systemOrange
             omegaCyl.firstMaterial?.emission.contents = NSColor.systemOrange
@@ -429,13 +530,24 @@ private struct SpatialSceneKitContainer: NSViewRepresentable {
             coverPillarNode.position = SCNVector3(0, -0.35, -2.8)
             scene.rootNode.addChildNode(coverPillarNode)
 
-            // 3D Target Sphere at z = -5.2m
+            // 3D Target Sphere
             let targetGeom = SCNSphere(radius: 0.24)
             targetGeom.firstMaterial?.diffuse.contents = NSColor.systemOrange
             targetGeom.firstMaterial?.emission.contents = NSColor.systemRed
             targetSphereNode.geometry = targetGeom
-            targetSphereNode.position = SCNVector3(0, 0, -5.2)
+            targetSphereNode.position = SCNVector3(0, 0, -4.8)
             scene.rootNode.addChildNode(targetSphereNode)
+
+            // Guided Wizard Left & Right / Up & Down 3D Guide Gates
+            for node in [leftGuideGateNode, rightGuideGateNode] {
+                let gateTorus = SCNTorus(ringRadius: 0.34, pipeRadius: 0.035)
+                gateTorus.firstMaterial?.diffuse.contents = NSColor.systemYellow
+                gateTorus.firstMaterial?.emission.contents = NSColor.systemYellow.withAlphaComponent(0.5)
+                node.geometry = gateTorus
+                node.eulerAngles = SCNVector3(CGFloat.pi / 2, 0, 0)
+                node.isHidden = true
+                scene.rootNode.addChildNode(node)
+            }
         }
 
         private enum AxisDir { case x, y, z }
@@ -478,9 +590,15 @@ private struct SpatialSceneKitContainer: NSViewRepresentable {
         let deg2rad = CGFloat.pi / 180.0
         let yawRad = CGFloat(-telemetry.relativeAngles.yawDeg) * deg2rad
         let pitchRad = CGFloat(telemetry.relativeAngles.pitchDeg) * deg2rad
-        let rollRad = CGFloat(-telemetry.relativeAngles.rollDeg) * deg2rad
 
-        // 1. Update 3D Head Rig Position (Lateral Roll-Peek + Vertical Z-Stance) & Orientation
+        // Only apply full visual Roll to the 3D head when testing Roll (or when Stabilize 3D Roll is unchecked)
+        let isRollFocusedStep = (benchmark.mode == .coverPeekAndJump) ||
+            (benchmark.mode == .guidedWizard && benchmark.wizardStep == .step4RollPeekLeftRight) ||
+            !lockVisualRollWhenAiming
+        let effectiveRollDeg = isRollFocusedStep ? telemetry.relativeAngles.rollDeg : (telemetry.relativeAngles.rollDeg * 0.15)
+        let rollRad = CGFloat(-effectiveRollDeg) * deg2rad
+
+        // 1. Update 3D Head Rig Position & Orientation
         coord.headRigNode.position = SCNVector3(
             CGFloat(benchmark.lateralPeekMeters),
             CGFloat(benchmark.verticalStanceMeters),
@@ -488,9 +606,14 @@ private struct SpatialSceneKitContainer: NSViewRepresentable {
         )
         coord.headRigNode.eulerAngles = SCNVector3(pitchRad, yawRad, rollRad)
 
-        // 2. Show/Hide 3D Cover Pillar & Target Sphere based on Diagnostic Mode
+        // 2. Update Guided Wizard 3D Gate Rings (Steps 2, 3, 4)
+        updateWizardGuideGates(coord: coord)
+
+        // 3. Show/Hide 3D Cover Pillar & Target Sphere
         coord.coverPillarNode.isHidden = (benchmark.mode != .coverPeekAndJump)
-        let showTarget = (benchmark.mode == .coverPeekAndJump || benchmark.mode == .targetDome360)
+        let showTarget = (benchmark.mode == .coverPeekAndJump ||
+                          benchmark.mode == .targetDome360 ||
+                          (benchmark.mode == .guidedWizard && benchmark.wizardStep == .step5TargetShootout))
         coord.targetSphereNode.isHidden = !showTarget
 
         if showTarget {
@@ -507,7 +630,6 @@ private struct SpatialSceneKitContainer: NSViewRepresentable {
             }
         }
 
-        // Color gaze laser ray: Red if blocked by cover pillar, Green if on target, Cyan otherwise
         let laserMat = coord.gazeLaserNode.geometry?.firstMaterial
         if benchmark.isLineOfSightBlockedByCover {
             laserMat?.diffuse.contents = NSColor.systemRed
@@ -520,7 +642,7 @@ private struct SpatialSceneKitContainer: NSViewRepresentable {
             laserMat?.emission.contents = NSColor.systemCyan
         }
 
-        // 3. Orient & Scale 3D Vectors Attached to Head Rig (Angular Velocity, Linear Accel, Gravity)
+        // 4. Orient & Scale 3D Vectors Attached to Head Rig
         let omegaVec = Vector3(
             x: telemetry.rawPitchRateDegPerSec / 90.0,
             y: telemetry.rawYawRateDegPerSec / 90.0,
@@ -535,6 +657,47 @@ private struct SpatialSceneKitContainer: NSViewRepresentable {
         let grav = telemetry.gravityVector
         let scaledGrav = Vector3(x: grav.x * 0.9, y: grav.z * 0.9, z: -grav.y * 0.9)
         orientVectorNode(coord.gravityVectorNode, vector: scaledGrav, baseOffset: SCNVector3(0, -0.36, 0))
+    }
+
+    private func updateWizardGuideGates(coord: Coordinator) {
+        guard benchmark.mode == .guidedWizard else {
+            coord.leftGuideGateNode.isHidden = true
+            coord.rightGuideGateNode.isHidden = true
+            return
+        }
+
+        switch benchmark.wizardStep {
+        case .step2YawLeftRight:
+            coord.leftGuideGateNode.isHidden = false
+            coord.rightGuideGateNode.isHidden = false
+            coord.leftGuideGateNode.position = SCNVector3(-1.45, 0, -4.6)
+            coord.rightGuideGateNode.position = SCNVector3(1.45, 0, -4.6)
+            colorGate(coord.leftGuideGateNode, passed: benchmark.didHitLeftCriterion)
+            colorGate(coord.rightGuideGateNode, passed: benchmark.didHitRightCriterion)
+        case .step3PitchUpDown:
+            coord.leftGuideGateNode.isHidden = false
+            coord.rightGuideGateNode.isHidden = false
+            coord.leftGuideGateNode.position = SCNVector3(0, 1.05, -4.6)
+            coord.rightGuideGateNode.position = SCNVector3(0, -1.05, -4.6)
+            colorGate(coord.leftGuideGateNode, passed: benchmark.didHitLeftCriterion)
+            colorGate(coord.rightGuideGateNode, passed: benchmark.didHitRightCriterion)
+        case .step4RollPeekLeftRight:
+            coord.leftGuideGateNode.isHidden = false
+            coord.rightGuideGateNode.isHidden = false
+            coord.leftGuideGateNode.position = SCNVector3(-0.95, 0.45, -2.5)
+            coord.rightGuideGateNode.position = SCNVector3(0.95, 0.45, -2.5)
+            colorGate(coord.leftGuideGateNode, passed: benchmark.didHitLeftCriterion)
+            colorGate(coord.rightGuideGateNode, passed: benchmark.didHitRightCriterion)
+        default:
+            coord.leftGuideGateNode.isHidden = true
+            coord.rightGuideGateNode.isHidden = true
+        }
+    }
+
+    private func colorGate(_ node: SCNNode, passed: Bool) {
+        let color: NSColor = passed ? .systemGreen : .systemYellow
+        node.geometry?.firstMaterial?.diffuse.contents = color
+        node.geometry?.firstMaterial?.emission.contents = color.withAlphaComponent(0.6)
     }
 
     private func orientVectorNode(_ node: SCNNode, vector: Vector3, baseOffset: SCNVector3) {

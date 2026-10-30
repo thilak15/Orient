@@ -194,12 +194,28 @@ public final class CursorPipeline: @unchecked Sendable {
         lastSampleTimestamp = sample.timestamp
         latestSample = sample
 
-        // 1. Compute relative head pose from neutral anchor and apply Cross-Axis Decoupling
+        // 1. Compute relative head pose from neutral anchor and apply Cross-Axis Decoupling + Roll Stabilization
         if let ref = referenceAttitude {
             let relQ = sample.attitude.relative(to: ref)
             var angles = config.decouplingMatrix.decoupleAngles(relQ.toHeadAnglesDegrees())
             if config.invertYaw { angles.yawDeg = -angles.yawDeg }
             if config.invertPitch { angles.pitchDeg = -angles.pitchDeg }
+
+            if !config.enableYawAxis { angles.yawDeg = 0 }
+            if !config.enablePitchAxis { angles.pitchDeg = 0 }
+            if !config.enableRollAxis {
+                angles.rollDeg = 0
+            } else {
+                // Suppress micro-roll wobble within rollDeadzoneDeg while preserving intentional tilts (>= 10 deg)
+                let absRoll = abs(angles.rollDeg)
+                let dz = config.rollDeadzoneDeg
+                if absRoll <= dz {
+                    angles.rollDeg = 0
+                } else if absRoll < 10.0 && dz < 10.0 {
+                    let scale = (absRoll - dz) / (10.0 - dz)
+                    angles.rollDeg *= scale
+                }
+            }
             relativeAngles = angles
         }
 
@@ -211,9 +227,9 @@ public final class CursorPipeline: @unchecked Sendable {
             rollRateDegPerSec: rates.rollRate
         )
 
-        let rawYawVel = decoupled.yawRate * (config.invertYaw ? -1.0 : 1.0)
-        let rawPitchVel = decoupled.pitchRate * (config.invertPitch ? -1.0 : 1.0)
-        let rawRollVel = rates.rollRate
+        let rawYawVel = config.enableYawAxis ? (decoupled.yawRate * (config.invertYaw ? -1.0 : 1.0)) : 0.0
+        let rawPitchVel = config.enablePitchAxis ? (decoupled.pitchRate * (config.invertPitch ? -1.0 : 1.0)) : 0.0
+        let rawRollVel = config.enableRollAxis ? rates.rollRate : 0.0
 
         filteredYawDegPerSec = yawFilter.filter(rawYawVel, timestamp: sample.timestamp)
         filteredPitchDegPerSec = pitchFilter.filter(rawPitchVel, timestamp: sample.timestamp)

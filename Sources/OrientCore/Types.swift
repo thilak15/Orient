@@ -163,6 +163,22 @@ public struct IMUSample: Sendable, Equatable {
             rollRate: rotationRate.y * rad2deg
         )
     }
+
+    /// Computes gravity-referenced Roll (ear-to-shoulder) and Pitch (nod up/down) in degrees.
+    /// Because gravity is vertical in world space, turning the head left/right (Yaw) leaves
+    /// gravity-derived Roll and Pitch 100% invariant—eliminating phantom Roll when looking around!
+    public var gravityRollAndPitchDegrees: (rollDeg: Double, pitchDeg: Double)? {
+        let mag = gravity.magnitude
+        guard mag > 0.5 else { return nil }
+        let gx = gravity.x / mag
+        let gy = gravity.y / mag
+        let gz = gravity.z / mag
+        let rad2deg = 180.0 / Double.pi
+        // In CoreMotion headphone frame: +X is right ear, +Y is nose forward, -Z is down.
+        let rollDeg = atan2(-gx, max(0.15, -gz)) * rad2deg
+        let pitchDeg = atan2(-gy, hypot(gx, gz)) * rad2deg
+        return (rollDeg: rollDeg, pitchDeg: pitchDeg)
+    }
 }
 
 public enum GestureAction: String, CaseIterable, Sendable, Codable, Identifiable {
@@ -216,9 +232,14 @@ public struct OrientConfiguration: Sendable, Equatable, Codable {
     public var safetyCutoffAngleDeg: Double = 75.0
     public var silentAudioKeepAliveEnabled: Bool = true
 
-    // Phase 2: 6-DOF Disambiguation & Anatomical Cross-Axis Decoupling
+    // Phase 2: 6-DOF Disambiguation, Axis Locks & Anatomical Cross-Axis Decoupling
     public var decouplingMatrix: DecouplingMatrix = .identity
     public var leverArmRadiusMeters: Double = 0.085
+    public var enableYawAxis: Bool = true
+    public var enablePitchAxis: Bool = true
+    public var enableRollAxis: Bool = true
+    public var rollDeadzoneDeg: Double = 4.5
+    public var rollSmoothingFactor: Double = 0.25
 
     public init() {}
 }
