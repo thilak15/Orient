@@ -13,7 +13,7 @@ public enum GameInjectionProtocol: String, CaseIterable, Sendable, Codable, Iden
 /// Can be cycled live while inside a game using `Option + M` (`⌥M`).
 public enum InGameAimStyle: String, CaseIterable, Sendable, Codable, Identifiable {
     case microGainAmplified = "1. Accela 6x Micro-Gain + Auto-Ratchet Turn (Recommended)"
-    case gyroHybridTightEdge = "2. Pure Bidirectional 6x + ±5.5° Edge Spin"
+    case gyroHybridTightEdge = "2. Hybrid Gyro + ±5.5° Edge Spin + Auto-Ratchet"
     case velocityThumbstick = "3. Velocity Thumbstick (Tilt to Turn, Center to Hold)"
     case faceForwardRollAim = "4. Face-Forward (Roll = Left/Right, Pitch = Up/Down)"
 
@@ -141,7 +141,7 @@ public struct GameControllerEngine: Sendable {
         peakTurnYawDeg = 0.0
         isRatchetingReturnToCenter = false
         continuousEdgeTurnOffsetX = 0.0
-        if autoRatchetYawEnabled && aimStyle == .microGainAmplified {
+        if autoRatchetYawEnabled && (aimStyle == .microGainAmplified || aimStyle == .gyroHybridTightEdge) {
             // Only snap back uncommitted foveal offset so committed hallway turns stay facing the new direction
             virtualCameraX = uncommittedFovealYawPx
             uncommittedFovealYawPx = 0.0
@@ -210,25 +210,35 @@ public struct GameControllerEngine: Sendable {
             }
 
         case .gyroHybridTightEdge:
-            // Bidirectional 6x Micro-Gain inside ±tightEdgeYawDeg + Continuous 360° Horizontal Spin at the edge
-            if abs(smoothedYawDeg) > tightEdgeYawDeg && abs(baseDeltaX) >= 0 {
-                let sign = smoothedYawDeg >= 0 ? 1.0 : -1.0
-                let excessNorm = min(2.0, (abs(smoothedYawDeg) - tightEdgeYawDeg) / 5.0)
-                continuousEdgeTurnOffsetX += sign * excessNorm * tightEdgePanSpeedPxPerSec * masterMult * clampedDt
-            }
-
-            let clampedCenterYaw = max(-tightEdgeYawDeg, min(tightEdgeYawDeg, smoothedYawDeg))
-            let targetCamX = evaluateAccelaNonLinearPixels(angleDeg: clampedCenterYaw, isPitch: false, masterMult: masterMult) + continuousEdgeTurnOffsetX
+            // Vertical Pitch (Y): Closed-Loop Horizon-Locked + base gyro delta
             let targetCamY = -evaluateAccelaNonLinearPixels(angleDeg: smoothedPitchDeg, isPitch: true, masterMult: masterMult)
-
-            let rawErrX = (targetCamX - virtualCameraX) + baseDeltaX * masterMult
             let rawErrY = (targetCamY - virtualCameraY) + baseDeltaY * masterMult
             let maxStepPerTick = 140.0
-
-            outDX = max(-maxStepPerTick, min(maxStepPerTick, rawErrX))
             outDY = max(-maxStepPerTick, min(maxStepPerTick, rawErrY))
-            virtualCameraX += (outDX - baseDeltaX * masterMult)
             virtualCameraY += (outDY - baseDeltaY * masterMult)
+
+            // Horizontal Yaw (X): Hybrid Gyro + ±tightEdgeYawDeg Continuous Spin + Auto-Ratchet Return-Clutch
+            if autoRatchetYawEnabled {
+                let ratchetStepX = stepAutoRatchetYaw(masterMult: masterMult, dt: clampedDt)
+                if isRatchetingReturnToCenter {
+                    // Returning head to monitor center -> clutch BOTH position and base gyro delta so zero pull-back occurs!
+                    outDX = 0.0
+                } else {
+                    outDX = max(-maxStepPerTick, min(maxStepPerTick, ratchetStepX + baseDeltaX * masterMult))
+                    virtualCameraX += outDX
+                }
+            } else {
+                if abs(smoothedYawDeg) > tightEdgeYawDeg && abs(baseDeltaX) >= 0 {
+                    let sign = smoothedYawDeg >= 0 ? 1.0 : -1.0
+                    let excessNorm = min(2.0, (abs(smoothedYawDeg) - tightEdgeYawDeg) / 5.0)
+                    continuousEdgeTurnOffsetX += sign * excessNorm * tightEdgePanSpeedPxPerSec * masterMult * clampedDt
+                }
+                let clampedCenterYaw = max(-tightEdgeYawDeg, min(tightEdgeYawDeg, smoothedYawDeg))
+                let targetCamX = evaluateAccelaNonLinearPixels(angleDeg: clampedCenterYaw, isPitch: false, masterMult: masterMult) + continuousEdgeTurnOffsetX
+                let rawErrX = (targetCamX - virtualCameraX) + baseDeltaX * masterMult
+                outDX = max(-maxStepPerTick, min(maxStepPerTick, rawErrX))
+                virtualCameraX += (outDX - baseDeltaX * masterMult)
+            }
 
         case .velocityThumbstick:
             // Smooth spring-centered joystick: tilting >1.4° spins camera; returning to 0° holds new direction!
