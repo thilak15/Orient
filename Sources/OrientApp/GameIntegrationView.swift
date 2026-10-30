@@ -5,181 +5,31 @@ import OrientCore
 struct GameIntegrationView: View {
     @Bindable var controller: HeadphoneMotionController
     @Environment(\.openURL) private var openURL
-    @State private var selectedInAppURL: String = "https://deadshot.io"
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            if controller.isInAppGameBrowserActive {
-                inAppGameArenaView
-            } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 14) {
-                        instantPlayLaunchersCard
-                        externalBrowserInstructionsCard
-                        aimStyleAndTuningCard
-                        pubgTacticalLeanCard
-                    }
-                    .padding(.vertical, 4)
-                }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                externalBrowserLaunchersCard
+                accelaMicroGainResearchCard
+                aimStyleAndTuningCard
+                pubgTacticalLeanCard
             }
+            .padding(.vertical, 4)
         }
     }
 
-    // MARK: - Built-In In-App 3D FPS Game Arena (Zero OS Permissions Needed)
+    // MARK: - 1. External Browser (Chrome / Safari) & Cloud PUBG Launchers
 
-    private var inAppGameArenaView: some View {
-        VStack(spacing: 8) {
-            // Compact Top Game Control Bar
-            HStack(spacing: 10) {
-                Button {
-                    controller.isInAppGameBrowserActive = false
-                } label: {
-                    Label("Back to Game Settings", systemImage: "chevron.left")
-                        .font(.caption.bold())
-                }
-                .buttonStyle(.bordered)
-
-                Picker("Game", selection: $selectedInAppURL) {
-                    Text("🎯 Deadshot.io").tag("https://deadshot.io")
-                    Text("🔫 Krunker.io").tag("https://krunker.io")
-                    Text("⚡ Ev.io").tag("https://ev.io")
-                }
-                .frame(width: 190)
-                .onChange(of: selectedInAppURL) { _, newURL in
-                    controller.inAppGameBridge.loadGame(url: newURL)
-                }
-
-                Button {
-                    controller.inAppGameBridge.reload()
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
-                .buttonStyle(.bordered)
-                .help("Reload Game")
-
-                Divider().frame(height: 20)
-
-                Picker("Aim Style (⌥M)", selection: $controller.gameEngine.aimStyle) {
-                    ForEach(InGameAimStyle.allCases) { style in
-                        Text(style.rawValue).tag(style)
-                    }
-                }
-                .frame(maxWidth: 290)
-
-                Spacer()
-
-                if controller.activeLeanState != .upright {
-                    Text(controller.activeLeanState.rawValue)
-                        .font(.system(size: 11, weight: .black, design: .monospaced))
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(Color.yellow.opacity(0.25))
-                        .foregroundStyle(.yellow)
-                        .clipShape(Capsule())
-                }
-
-                Button {
-                    controller.recenterPose()
-                } label: {
-                    Label("Recenter (⌥R)", systemImage: "scope")
-                        .font(.caption.bold())
-                }
-                .buttonStyle(.bordered)
-
-                Button {
-                    controller.toggleTracking()
-                } label: {
-                    Label(
-                        controller.isTrackingActive ? "AirPods Aim: ON (⌥Space)" : "AirPods Aim: OFF (⌥Space)",
-                        systemImage: controller.isTrackingActive ? "dot.radiowaves.left.and.right" : "pause.circle"
-                    )
-                    .font(.caption.bold())
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(controller.isTrackingActive ? .green : .orange)
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(Color.black.opacity(0.25))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-
-            // Instruction Banner
-            HStack(spacing: 12) {
-                Image(systemName: "bolt.circle.fill")
-                    .foregroundStyle(.green)
-                Text("1. Click 'PLAY' inside the game below with your mouse.  2. AirPods Aiming turns ON automatically when you enter the match!  3. Press Option+R (⌥R) to recenter your crosshair, or Option+M (⌥M) to switch Aim Style.")
-                    .font(.caption.bold())
-                    .foregroundStyle(.primary)
-                Spacer()
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .background(Color.green.opacity(0.14))
-            .clipShape(RoundedRectangle(cornerRadius: 6))
-
-            // Embedded WebGL FPS Viewport
-            InAppFPSWebViewRepresentable(
-                bridge: controller.inAppGameBridge,
-                initialURL: selectedInAppURL
-            )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .clipShape(RoundedRectangle(cornerRadius: 10))
-            .overlay(
-                RoundedRectangle(cornerRadius: 10)
-                    .stroke(controller.isTrackingActive ? Color.green.opacity(0.6) : Color.secondary.opacity(0.3), lineWidth: 2)
-            )
-        }
-    }
-
-    // MARK: - Option 1: In-App Instant Game Launchers
-
-    private var instantPlayLaunchersCard: some View {
-        GroupBox("🚀 Option A (Recommended): Play 3D FPS Right Inside Orient (Instant • Zero OS Permissions Needed)") {
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Play Deadshot.io, Krunker.io, or Ev.io directly inside Orient's built-in WebGL Arena. Our direct JavaScript Pointer-Lock bridge feeds your 120Hz AirPods head movement & Q/E lean straight into the game canvas automatically when you click 'Play'!")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                HStack(spacing: 12) {
-                    inAppLauncherButton(
-                        title: "▶ Play Deadshot.io Inside Orient",
-                        subtitle: "Recommended • Auto-locks & aims on click",
-                        icon: "scope",
-                        color: .green,
-                        url: "https://deadshot.io"
-                    )
-                    inAppLauncherButton(
-                        title: "▶ Play Krunker.io Inside Orient",
-                        subtitle: "Tactical FPS • Supports Q/E & ADS",
-                        icon: "flame.fill",
-                        color: .orange,
-                        url: "https://krunker.io"
-                    )
-                    inAppLauncherButton(
-                        title: "▶ Play Ev.io Inside Orient",
-                        subtitle: "Sci-Fi Arena FPS • Instant Spawn",
-                        icon: "bolt.shield.fill",
-                        color: .cyan,
-                        url: "https://ev.io"
-                    )
-                }
-            }
-            .padding(8)
-        }
-    }
-
-    // MARK: - Option 2: External Browser (Chrome / Safari) & Cloud PUBG
-
-    private var externalBrowserInstructionsCard: some View {
-        GroupBox("🌐 Option B: Use in External Browser (Chrome / Safari) or Cloud PUBG (GeForce NOW)") {
+    private var externalBrowserLaunchersCard: some View {
+        GroupBox("🚀 Step 1: Launch External 3D FPS Game (Chrome / Safari Pointer-Lock or Cloud PUBG)") {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 12) {
                     if controller.isAccessibilityGranted {
-                        Label("Step 1: macOS Accessibility Permission Active", systemImage: "checkmark.shield.fill")
+                        Label("macOS Accessibility Permission Active", systemImage: "checkmark.shield.fill")
                             .font(.caption.bold())
                             .foregroundStyle(.green)
                     } else {
-                        Label("Step 1: Required for External Apps — Click 'Fix & Grant Accessibility' ->", systemImage: "exclamationmark.triangle.fill")
+                        Label("Required for External Games — Click 'Fix & Grant Accessibility' ->", systemImage: "exclamationmark.triangle.fill")
                             .font(.caption.bold())
                             .foregroundStyle(.orange)
                     }
@@ -197,49 +47,131 @@ struct GameIntegrationView: View {
                     .tint(controller.isAccessibilityGranted ? .green : .orange)
                 }
 
-                Text("How to play in External Chrome / Safari:  (1) Make sure Step 1 above is green.  (2) Click an external launcher below and click 'PLAY' inside the game so your crosshair is locked.  (3) Press Option + Space (⌥Space) while inside the match to start aiming with your AirPods!")
+                Text("1. Click any game below to open it in your browser and automatically show the Floating In-Game HUD.  2. Click 'PLAY' inside the game to lock your crosshair.  3. Press Option+Space (⌥Space) to aim, and Option+R (⌥R) anytime to snap BOTH your head pose and the in-game screen back to center!")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
                 HStack(spacing: 12) {
                     externalLauncherButton(
-                        title: "↗ Deadshot.io in Browser",
-                        icon: "safari",
+                        title: "🎯 Play Deadshot.io",
+                        subtitle: "Fast 120Hz Pointer-Lock FPS",
+                        icon: "scope",
+                        color: .green,
                         url: "https://deadshot.io"
                     )
                     externalLauncherButton(
-                        title: "↗ Krunker.io in Browser",
-                        icon: "safari",
+                        title: "🔫 Play Krunker.io",
+                        subtitle: "Tactical FPS • Supports Q/E & ADS",
+                        icon: "flame.fill",
+                        color: .orange,
                         url: "https://krunker.io"
                     )
                     externalLauncherButton(
-                        title: "↗ PUBG on GeForce NOW",
+                        title: "⚡ Play Ev.io",
+                        subtitle: "Sci-Fi Arena FPS • Instant Spawn",
+                        icon: "bolt.shield.fill",
+                        color: .cyan,
+                        url: "https://ev.io"
+                    )
+                    externalLauncherButton(
+                        title: "🪖 PUBG on GeForce NOW",
+                        subtitle: "Cloud PC PUBG • Full Q/E Peek",
                         icon: "cloud.fill",
+                        color: .yellow,
                         url: "https://play.geforcenow.com"
                     )
-                    Toggle("Keep Cursor Anchored Inside Game Window", isOn: $controller.lockCursorInPlaceForExternal3DGame)
+                }
+
+                HStack(spacing: 18) {
+                    Toggle("Keep Cursor Anchored Inside Game Window (Prevents Clicking Outside Canvas)", isOn: $controller.lockCursorInPlaceForExternal3DGame)
                         .font(.caption.bold())
+                    Spacer()
+                    Toggle("Show Click-Through Floating HUD Over Games", isOn: $controller.isFloatingHUDVisible)
+                        .font(.caption.bold())
+                        .tint(.cyan)
                 }
             }
             .padding(8)
         }
     }
 
-    // MARK: - Aim Style & Sensitivity Tuning
+    // MARK: - 2. Research-Backed Accela 6x Non-Linear Micro-Gain & Closed-Loop Recenter
 
-    private var aimStyleAndTuningCard: some View {
-        GroupBox("🎯 Non-VR In-Game Aim Style (Press ⌥M Anytime In-Game to Switch!)") {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    Toggle("Show Click-Through Floating HUD Over External Games", isOn: $controller.isFloatingHUDVisible)
-                        .font(.subheadline.bold())
-                        .tint(.cyan)
+    private var accelaMicroGainResearchCard: some View {
+        GroupBox("🧠 Step 2: Accela Non-Linear 6x Micro-Gain & Closed-Loop Screen Recenter (⌥R)") {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 14) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Closed-Loop Virtual Screen Displacement (Snaps to 0, 0 on ⌥R):")
+                            .font(.caption.bold())
+                        HStack(spacing: 12) {
+                            Text(String(format: "Screen Offset X: %+.0f px", controller.virtualCameraOffsetPxX))
+                                .font(.system(size: 12, weight: .bold, design: .monospaced))
+                                .foregroundStyle(.cyan)
+                            Text(String(format: "Screen Offset Y: %+.0f px", controller.virtualCameraOffsetPxY))
+                                .font(.system(size: 12, weight: .bold, design: .monospaced))
+                                .foregroundStyle(.mint)
+                        }
+                    }
+
                     Spacer()
-                    Text("Tip: Press Option + M (⌥M) while inside a game to cycle these 4 Aim Styles live!")
-                        .font(.caption.bold())
-                        .foregroundStyle(.yellow)
+
+                    Button {
+                        controller.recenterPose()
+                    } label: {
+                        Label("Recenter Screen & Head Now (⌥R)", systemImage: "scope")
+                            .font(.caption.bold())
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.cyan)
                 }
 
+                Text("Why this fixes looking down / off-center: Instead of open-loop velocity integration (which drifts toward the floor when you move down fast and up slow), Orient now uses Closed-Loop Pose Tracking (ΔCam = TargetCam(θ) - VirtualCam) + TrackIR/Opentrack's 3-Zone Accela Spline. Returning your head to 0° or pressing ⌥R injects (-ScreenOffsetX, -ScreenOffsetY) back into the game so the 3D screen physically snaps back to the horizon!")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+
+                Divider()
+
+                sliderRow(
+                    title: "Accela Micro-Gain Amplification (Outer Sweep)",
+                    value: $controller.gameEngine.microGainFactor,
+                    range: 3.0...12.0,
+                    unit: "x"
+                )
+                sliderRow(
+                    title: "Foveal Precision Pocket Radius (Steady Crosshair Zone)",
+                    value: $controller.gameEngine.fovealRadiusDeg,
+                    range: 0.4...3.0,
+                    unit: "°"
+                )
+                sliderRow(
+                    title: "Non-Linear Spline Acceleration Exponent",
+                    value: $controller.gameEngine.nonLinearCurveExponent,
+                    range: 1.0...2.4,
+                    unit: ""
+                )
+                sliderRow(
+                    title: "Asymmetric Vertical Pitch-to-Yaw Ratio (Damps Floor/Sky Dive)",
+                    value: $controller.gameEngine.verticalPitchRatio,
+                    range: 0.25...1.0,
+                    unit: "x"
+                )
+                sliderRow(
+                    title: "Cross-Axis Chin-Dip Suppression (During Fast Horizontal Flicks)",
+                    value: $controller.gameEngine.chinDipSuppressionStrength,
+                    range: 0.0...0.95,
+                    unit: ""
+                )
+            }
+            .padding(8)
+        }
+    }
+
+    // MARK: - 3. Aim Style & Master Sensitivity
+
+    private var aimStyleAndTuningCard: some View {
+        GroupBox("🎯 Step 3: Select Non-VR Aim Style (Press ⌥M Anytime In-Game to Cycle)") {
+            VStack(alignment: .leading, spacing: 10) {
                 Picker("In-Game Aim Style (⌥M)", selection: $controller.gameEngine.aimStyle) {
                     ForEach(InGameAimStyle.allCases) { style in
                         Text(style.rawValue).tag(style)
@@ -267,26 +199,20 @@ struct GameIntegrationView: View {
                     unit: "x"
                 )
                 sliderRow(
-                    title: "Tight Non-VR Edge Pan Threshold (Yaw)",
+                    title: "Hybrid Mode Edge Turn Threshold (Yaw)",
                     value: $controller.gameEngine.tightEdgeYawDeg,
                     range: 2.5...15.0,
                     unit: "°"
-                )
-                sliderRow(
-                    title: "Tight Edge Continuous Turn Speed",
-                    value: $controller.gameEngine.tightEdgePanSpeedPxPerSec,
-                    range: 400...2800,
-                    unit: "px/s"
                 )
             }
             .padding(8)
         }
     }
 
-    // MARK: - PUBG Tactical Q/E Roll Lean
+    // MARK: - 4. PUBG Tactical Q/E Roll Lean
 
     private var pubgTacticalLeanCard: some View {
-        GroupBox("🛡️ PUBG Tactical Q/E Roll Peek & ADS Settings") {
+        GroupBox("🛡️ Step 4: PUBG Tactical Q/E Roll Peek & ADS Settings") {
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
                     Text("Current Lean Key State:")
@@ -329,7 +255,7 @@ struct GameIntegrationView: View {
         }
     }
 
-    private func inAppLauncherButton(
+    private func externalLauncherButton(
         title: String,
         subtitle: String,
         icon: String,
@@ -337,9 +263,16 @@ struct GameIntegrationView: View {
         url: String
     ) -> some View {
         Button {
-            selectedInAppURL = url
-            controller.isInAppGameBrowserActive = true
-            controller.inAppGameBridge.loadGame(url: url)
+            controller.isFloatingHUDVisible = true
+            controller.lockCursorInPlaceForExternal3DGame = true
+            if url.contains("geforcenow") || url.contains("krunker") {
+                controller.gameEngine.injectionProtocol = .pubgTacticalLean
+            } else {
+                controller.gameEngine.injectionProtocol = .pointerLockRawDelta
+            }
+            if let targetURL = URL(string: url) {
+                openURL(targetURL)
+            }
         } label: {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
@@ -360,38 +293,6 @@ struct GameIntegrationView: View {
         .buttonStyle(.plain)
     }
 
-    private func externalLauncherButton(
-        title: String,
-        icon: String,
-        url: String
-    ) -> some View {
-        Button {
-            controller.isInAppGameBrowserActive = false
-            controller.isFloatingHUDVisible = true
-            controller.lockCursorInPlaceForExternal3DGame = true
-            if url.contains("geforcenow") || url.contains("krunker") {
-                controller.gameEngine.injectionProtocol = .pubgTacticalLean
-            } else {
-                controller.gameEngine.injectionProtocol = .pointerLockRawDelta
-            }
-            if let targetURL = URL(string: url) {
-                openURL(targetURL)
-            }
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: icon)
-                    .foregroundStyle(.cyan)
-                Text(title)
-                    .font(.system(size: 11, weight: .bold))
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
-            .background(Color.cyan.opacity(0.14))
-            .clipShape(RoundedRectangle(cornerRadius: 7))
-        }
-        .buttonStyle(.plain)
-    }
-
     private func sliderRow(
         title: String,
         value: Binding<Double>,
@@ -401,7 +302,7 @@ struct GameIntegrationView: View {
         HStack {
             Text(title)
                 .font(.caption)
-                .frame(width: 260, alignment: .leading)
+                .frame(width: 310, alignment: .leading)
             Slider(value: value, in: range)
             Text(String(format: "%.2f %@", value.wrappedValue, unit))
                 .font(.system(size: 11, weight: .semibold, design: .monospaced))

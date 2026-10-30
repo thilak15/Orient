@@ -58,7 +58,7 @@ private final class CarbonHotKeyRouter: @unchecked Sendable {
         let signature = OSType(0x4F524E54) // 'ORNT'
         let bindings: [(id: UInt32, keyCode: Int)] = [
             (1, kVK_Space),  // Option + Space -> Toggle Tracking
-            (2, kVK_ANSI_R), // Option + R     -> Recenter Pose
+            (2, kVK_ANSI_R), // Option + R     -> Recenter Screen & Head Pose
             (3, kVK_ANSI_C), // Option + C     -> Toggle Clutch
             (4, kVK_ANSI_M)  // Option + M     -> Cycle In-Game Aim Style
         ]
@@ -127,12 +127,9 @@ private final class BackgroundCursorWorker: @unchecked Sendable {
             if !isTrackingActive {
                 cursorInjector.releaseAllHeldKeys()
                 gameEngine.reset()
-                inAppPendingDX = 0
-                inAppPendingDY = 0
             }
         }
     }
-    var isInAppGameBrowserActive: Bool = false
     var lockCursorInPlaceForExternal3DGame: Bool = true
     var isSimulatorEnabled: Bool = false
     var isRecordingRollCalibration: Bool = false
@@ -141,13 +138,9 @@ private final class BackgroundCursorWorker: @unchecked Sendable {
     private var timer120Hz: DispatchSourceTimer?
     private var frameCounter: Int = 0
     private var isUIUpdatePending: Bool = false
-    private var isInAppBridgeFlushPending: Bool = false
-    private var inAppPendingDX: Double = 0.0
-    private var inAppPendingDY: Double = 0.0
 
     func start(
-        onTelemetryUpdate: @escaping @Sendable (TelemetrySnapshot, TriggeredGesture?, TacticalLeanState) -> Void,
-        onInAppGameInput: @escaping @Sendable (Double, Double, TacticalLeanState?, TriggeredGesture?) -> Void
+        onTelemetryUpdate: @escaping @Sendable (TelemetrySnapshot, TriggeredGesture?, TacticalLeanState, Double, Double) -> Void
     ) {
         queue.async { [weak self] in
             guard let self, self.timer120Hz == nil else { return }
@@ -155,7 +148,7 @@ private final class BackgroundCursorWorker: @unchecked Sendable {
             timer.schedule(deadline: .now(), repeating: .microseconds(8333), leeway: .microseconds(600))
             timer.setEventHandler { [weak self] in
                 guard let self else { return }
-                self.tick(onTelemetryUpdate: onTelemetryUpdate, onInAppGameInput: onInAppGameInput)
+                self.tick(onTelemetryUpdate: onTelemetryUpdate)
             }
             timer.resume()
             self.timer120Hz = timer
@@ -168,12 +161,6 @@ private final class BackgroundCursorWorker: @unchecked Sendable {
         }
     }
 
-    func markInAppBridgeFlushComplete() {
-        queue.async { [weak self] in
-            self?.isInAppBridgeFlushPending = false
-        }
-    }
-
     func ingest(_ sample: IMUSample) {
         if isRecordingRollCalibration {
             recordedRollSamples.append(sample)
@@ -182,8 +169,7 @@ private final class BackgroundCursorWorker: @unchecked Sendable {
     }
 
     private func tick(
-        onTelemetryUpdate: @escaping @Sendable (TelemetrySnapshot, TriggeredGesture?, TacticalLeanState) -> Void,
-        onInAppGameInput: @escaping @Sendable (Double, Double, TacticalLeanState?, TriggeredGesture?) -> Void
+        onTelemetryUpdate: @escaping @Sendable (TelemetrySnapshot, TriggeredGesture?, TacticalLeanState, Double, Double) -> Void
     ) {
         let now = ProcessInfo.processInfo.systemUptime
         let currentPos = cursorInjector.currentCursorPosition()
@@ -195,6 +181,10 @@ private final class BackgroundCursorWorker: @unchecked Sendable {
             screenBounds: bounds
         )
 
+        if frame.triggeredGesture?.action == .recenter {
+            gameEngine.onRecenterPressed()
+        }
+
         let gameCmd = gameEngine.step120Hz(
             telemetry: pipeline.telemetry,
             baseDeltaX: frame.deltaX,
@@ -203,75 +193,52 @@ private final class BackgroundCursorWorker: @unchecked Sendable {
         )
 
         if isTrackingActive {
-            if isInAppGameBrowserActive {
-                // Route 120Hz look deltas & Q/E lean directly into the embedded WebGL FPS game!
-                inAppPendingDX += gameCmd.deltaX
-                inAppPendingDY += gameCmd.deltaY
+            if let leanChange = gameCmd.leanStateChangedTo {
+                cursorInjector.updateTacticalLeanKeys(to: leanChange)
+            }
 
-                let hasDelta = abs(inAppPendingDX) >= 0.15 || abs(inAppPendingDY) >= 0.15
-                let hasEvent = gameCmd.leanStateChangedTo != nil || frame.triggeredGesture != nil
+            if abs(gameCmd.deltaX) > 0.02 || abs(gameCmd.deltaY) > 0.02 || gameCmd.shouldResetTouchDragAnchor {
+                let targetPos = bounds.clamp(Point2D(
+                    x: currentPos.x + gameCmd.deltaX,
+                    y: currentPos.y + gameCmd.deltaY
+                ))
+                cursorInjector.moveCursor(
+                    to: targetPos,
+                    deltaX: gameCmd.deltaX,
+                    deltaY: gameCmd.deltaY,
+                    injectionProtocol: gameEngine.injectionProtocol,
+                    shouldResetTouchDragAnchor: gameCmd.shouldResetTouchDragAnchor,
+                    lockCursorInPlaceFor3DGame: lockCursorInPlaceForExternal3DGame
+                )
+            }
 
-                if (hasDelta || hasEvent) && !isInAppBridgeFlushPending {
-                    isInAppBridgeFlushPending = true
-                    let dx = inAppPendingDX
-                    let dy = inAppPendingDY
-                    inAppPendingDX = 0
-                    inAppPendingDY = 0
-                    let leanChange = gameCmd.leanStateChangedTo
-                    let trig = frame.triggeredGesture
-                    let workerRef = self
-                    DispatchQueue.main.async {
-                        workerRef.markInAppBridgeFlushComplete()
-                        onInAppGameInput(dx, dy, leanChange, trig)
+            if let gesture = frame.triggeredGesture {
+                switch gesture.action {
+                case .leftClick, .rightClick, .doubleClick:
+                    let clickPos = frame.rollbackPositionForClick ?? frame.targetPosition
+                    if frame.rollbackPositionForClick != nil && !lockCursorInPlaceForExternal3DGame {
+                        cursorInjector.moveCursor(to: clickPos, deltaX: 0, deltaY: 0)
                     }
-                }
-            } else {
-                // External Browser / Native Game / Desktop OS injection
-                if let leanChange = gameCmd.leanStateChangedTo {
-                    cursorInjector.updateTacticalLeanKeys(to: leanChange)
-                }
-
-                if abs(gameCmd.deltaX) > 0.02 || abs(gameCmd.deltaY) > 0.02 || gameCmd.shouldResetTouchDragAnchor {
-                    let targetPos = bounds.clamp(Point2D(
-                        x: currentPos.x + gameCmd.deltaX,
-                        y: currentPos.y + gameCmd.deltaY
-                    ))
-                    cursorInjector.moveCursor(
-                        to: targetPos,
-                        deltaX: gameCmd.deltaX,
-                        deltaY: gameCmd.deltaY,
-                        injectionProtocol: gameEngine.injectionProtocol,
-                        shouldResetTouchDragAnchor: gameCmd.shouldResetTouchDragAnchor,
-                        lockCursorInPlaceFor3DGame: lockCursorInPlaceForExternal3DGame
-                    )
-                }
-
-                if let gesture = frame.triggeredGesture {
-                    switch gesture.action {
-                    case .leftClick, .rightClick, .doubleClick:
-                        let clickPos = frame.rollbackPositionForClick ?? frame.targetPosition
-                        if frame.rollbackPositionForClick != nil && !lockCursorInPlaceForExternal3DGame {
-                            cursorInjector.moveCursor(to: clickPos, deltaX: 0, deltaY: 0)
-                        }
-                        cursorInjector.performClick(action: gesture.action, at: clickPos)
-                    default:
-                        break
-                    }
+                    cursorInjector.performClick(action: gesture.action, at: clickPos)
+                default:
+                    break
                 }
             }
         }
 
         frameCounter += 1
-        // Throttle SwiftUI dashboard layout updates to ~15Hz (every 8th tick) so WebGL games get maximum GPU/CPU
+        // Throttle SwiftUI dashboard layout updates to ~15Hz (every 8th tick) so external 3D games get maximum GPU/CPU
         if (frameCounter % 8 == 0 || frame.triggeredGesture != nil || gameCmd.leanStateChangedTo != nil) && !isUIUpdatePending {
             isUIUpdatePending = true
             let snap = pipeline.telemetry
             let trig = frame.triggeredGesture
             let lean = gameCmd.currentLeanState
+            let vCamX = gameEngine.virtualCameraX
+            let vCamY = gameEngine.virtualCameraY
             let workerRef = self
             DispatchQueue.main.async {
                 workerRef.markUIUpdateComplete()
-                onTelemetryUpdate(snap, trig, lean)
+                onTelemetryUpdate(snap, trig, lean, vCamX, vCamY)
             }
         }
     }
@@ -283,15 +250,6 @@ public final class HeadphoneMotionController: NSObject, @unchecked Sendable {
     public var isTrackingActive: Bool = false {
         didSet {
             handleTrackingStateChanged()
-        }
-    }
-
-    public var isInAppGameBrowserActive: Bool = false {
-        didSet {
-            let active = isInAppGameBrowserActive
-            worker.queue.async { [worker] in
-                worker.isInAppGameBrowserActive = active
-            }
         }
     }
 
@@ -346,6 +304,12 @@ public final class HeadphoneMotionController: NSObject, @unchecked Sendable {
                 worker.gameEngine.isADSActive = updated.isADSActive
                 worker.gameEngine.adsMultiplier = updated.adsMultiplier
                 worker.gameEngine.inGameSensitivityMultiplier = updated.inGameSensitivityMultiplier
+                worker.gameEngine.microGainFactor = updated.microGainFactor
+                worker.gameEngine.fovealRadiusDeg = updated.fovealRadiusDeg
+                worker.gameEngine.nonLinearCurveExponent = updated.nonLinearCurveExponent
+                worker.gameEngine.verticalPitchRatio = updated.verticalPitchRatio
+                worker.gameEngine.chinDipSuppressionStrength = updated.chinDipSuppressionStrength
+                worker.gameEngine.fovealTremorDeadbandDeg = updated.fovealTremorDeadbandDeg
                 worker.gameEngine.tightEdgeYawDeg = updated.tightEdgeYawDeg
                 worker.gameEngine.tightEdgePitchDeg = updated.tightEdgePitchDeg
                 worker.gameEngine.tightEdgePanSpeedPxPerSec = updated.tightEdgePanSpeedPxPerSec
@@ -359,8 +323,9 @@ public final class HeadphoneMotionController: NSObject, @unchecked Sendable {
             hudManager.setVisible(isFloatingHUDVisible, controller: self)
         }
     }
-    public let inAppGameBridge = InAppWebGameBridge()
     public private(set) var activeLeanState: TacticalLeanState = .upright
+    public private(set) var virtualCameraOffsetPxX: Double = 0.0
+    public private(set) var virtualCameraOffsetPxY: Double = 0.0
     public private(set) var isCalibratingRollBleed: Bool = false
     public private(set) var sensorState: SensorSourceState = .waitingForAirPods
     public private(set) var isAccessibilityGranted: Bool = false
@@ -396,20 +361,6 @@ public final class HeadphoneMotionController: NSObject, @unchecked Sendable {
         super.init()
         self.isAccessibilityGranted = SystemCursorInjector.isAccessibilityTrusted(promptIfNeeded: false)
         self.hasMotionUsagePlistKey = Bundle.main.object(forInfoDictionaryKey: "NSMotionUsageDescription") != nil
-
-        self.inAppGameBridge.onPointerLockChanged = { [weak self] locked in
-            guard let self else { return }
-            if locked {
-                self.recenterPose()
-                if !self.isTrackingActive {
-                    self.isTrackingActive = true
-                }
-            }
-        }
-        self.inAppGameBridge.onADSStateChanged = { [weak self] active in
-            guard let self else { return }
-            self.gameEngine.isADSActive = active
-        }
     }
 
     /// Starts the 120Hz engine and AirPods CoreMotion listener after the UI window has finished appearing.
@@ -421,46 +372,27 @@ public final class HeadphoneMotionController: NSObject, @unchecked Sendable {
         setupMediaCommandCenter()
         startPermissionMonitor()
 
-        worker.start(
-            onTelemetryUpdate: { [weak self] snap, triggered, lean in
-                MainActor.assumeIsolated {
-                    guard let self else { return }
-                    self.telemetry = snap
-                    self.activeLeanState = lean
-                    self.diagnosticEngine.update(telemetry: snap, dt: 8.0 / 120.0)
-                    self.yawVelocityTrace.append(snap.filteredYawRateDegPerSec)
-                    if self.yawVelocityTrace.count > 60 { self.yawVelocityTrace.removeFirst() }
-                    self.pitchVelocityTrace.append(snap.filteredPitchRateDegPerSec)
-                    if self.pitchVelocityTrace.count > 60 { self.pitchVelocityTrace.removeFirst() }
+        worker.start { [weak self] snap, triggered, lean, vCamX, vCamY in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.telemetry = snap
+                self.activeLeanState = lean
+                self.virtualCameraOffsetPxX = vCamX
+                self.virtualCameraOffsetPxY = vCamY
+                self.diagnosticEngine.update(telemetry: snap, dt: 8.0 / 120.0)
+                self.yawVelocityTrace.append(snap.filteredYawRateDegPerSec)
+                if self.yawVelocityTrace.count > 60 { self.yawVelocityTrace.removeFirst() }
+                self.pitchVelocityTrace.append(snap.filteredPitchRateDegPerSec)
+                if self.pitchVelocityTrace.count > 60 { self.pitchVelocityTrace.removeFirst() }
 
-                    if let triggered {
-                        self.recentGestureEvents.insert(triggered, at: 0)
-                        if self.recentGestureEvents.count > 12 {
-                            self.recentGestureEvents.removeLast()
-                        }
-                    }
-                }
-            },
-            onInAppGameInput: { [weak self] dx, dy, leanChange, triggered in
-                MainActor.assumeIsolated {
-                    guard let self else { return }
-                    if abs(dx) > 0.01 || abs(dy) > 0.01 {
-                        self.inAppGameBridge.queueLookDelta(dx: dx, dy: dy)
-                    }
-                    if let leanChange {
-                        self.inAppGameBridge.updateTacticalLean(to: leanChange)
-                    }
-                    if let triggered {
-                        switch triggered.action {
-                        case .leftClick, .rightClick, .doubleClick:
-                            self.inAppGameBridge.injectFireClick(action: triggered.action)
-                        default:
-                            break
-                        }
+                if let triggered {
+                    self.recentGestureEvents.insert(triggered, at: 0)
+                    if self.recentGestureEvents.count > 12 {
+                        self.recentGestureEvents.removeLast()
                     }
                 }
             }
-        )
+        }
 
         startHardwareMotionIfSupported()
     }
@@ -485,9 +417,12 @@ public final class HeadphoneMotionController: NSObject, @unchecked Sendable {
         isTrackingActive.toggle()
     }
 
+    /// Recenters the user's physical head pose AND triggers a closed-loop counter-delta (`-virtualCameraX, -virtualCameraY`)
+    /// so the in-game 3D screen physically rotates right back to the centered horizon!
     public func recenterPose() {
         worker.queue.async { [worker] in
             worker.pipeline.recenter()
+            worker.gameEngine.onRecenterPressed()
         }
         simYawDeg = 0
         simPitchDeg = 0
@@ -594,12 +529,13 @@ public final class HeadphoneMotionController: NSObject, @unchecked Sendable {
 
     private func handleTrackingStateChanged() {
         let active = isTrackingActive
-        if active && !isInAppGameBrowserActive && !isAccessibilityGranted {
+        if active && !isAccessibilityGranted {
             isAccessibilityGranted = SystemCursorInjector.resetStaleTCCAndPromptAccessibility()
         }
         worker.queue.async { [worker] in
             if active {
                 worker.pipeline.recenter()
+                worker.gameEngine.reset()
             }
             worker.isTrackingActive = active
         }
@@ -609,7 +545,6 @@ public final class HeadphoneMotionController: NSObject, @unchecked Sendable {
             }
         } else {
             audioKeepAlive.stop()
-            inAppGameBridge.updateTacticalLean(to: .upright)
         }
     }
 
@@ -706,7 +641,7 @@ public final class HeadphoneMotionController: NSObject, @unchecked Sendable {
                 switch hotKeyID {
                 case 1: // Option + Space -> Toggle Tracking
                     self.toggleTracking()
-                case 2: // Option + R -> Recenter Neutral Pose
+                case 2: // Option + R -> Recenter Screen & Head Pose
                     self.recenterPose()
                 case 3: // Option + C -> Toggle Clutch
                     self.setClutchHeld(!self.telemetry.isClutchHeld)

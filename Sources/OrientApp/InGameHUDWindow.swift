@@ -150,7 +150,7 @@ struct InGameHUDOverlayView: View {
         if !controller.isTrackingActive {
             return .orange
         }
-        if !controller.isInAppGameBrowserActive && !controller.isAccessibilityGranted {
+        if !controller.isAccessibilityGranted {
             return .red
         }
         return .green
@@ -160,7 +160,7 @@ struct InGameHUDOverlayView: View {
         if !controller.isTrackingActive {
             return "PAUSED (Press ⌥Space)"
         }
-        if !controller.isInAppGameBrowserActive && !controller.isAccessibilityGranted {
+        if !controller.isAccessibilityGranted {
             return "NEEDS ACCESSIBILITY PERMISSION"
         }
         return "ORIENT LIVE"

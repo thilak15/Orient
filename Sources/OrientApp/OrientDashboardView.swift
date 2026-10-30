@@ -39,11 +39,6 @@ public struct OrientDashboardView: View {
                     .pickerStyle(.segmented)
                     .padding(.horizontal, 16)
                     .padding(.top, 12)
-                    .onChange(of: selectedTab) { _, newTab in
-                        if newTab != 0 {
-                            controller.isInAppGameBrowserActive = false
-                        }
-                    }
 
                     Group {
                         switch selectedTab {
