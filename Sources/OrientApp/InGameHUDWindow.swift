@@ -26,7 +26,7 @@ public final class InGameHUDWindowManager {
         }
 
         let hudPanel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 640, height: 74),
+            contentRect: NSRect(x: 0, y: 0, width: 680, height: 74),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -70,11 +70,11 @@ struct InGameHUDOverlayView: View {
             // Live Status Dot + Active / Paused
             HStack(spacing: 6) {
                 Circle()
-                    .fill(controller.isTrackingActive ? Color.green : Color.orange)
+                    .fill(statusColor)
                     .frame(width: 10, height: 10)
-                Text(controller.isTrackingActive ? "ORIENT LIVE" : "PAUSED (⌥Space)")
+                Text(statusText)
                     .font(.system(size: 11, weight: .black, design: .monospaced))
-                    .foregroundStyle(controller.isTrackingActive ? .green : .orange)
+                    .foregroundStyle(statusColor)
             }
 
             Divider().frame(height: 28)
@@ -111,8 +111,8 @@ struct InGameHUDOverlayView: View {
             Spacer()
 
             // Q / E Tactical Lean & Aim-Freeze Badges
-            if controller.gameEngine.currentLeanState != .upright {
-                Text(controller.gameEngine.currentLeanState.rawValue)
+            if controller.activeLeanState != .upright {
+                Text(controller.activeLeanState.rawValue)
                     .font(.system(size: 11, weight: .black, design: .monospaced))
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
@@ -137,12 +137,32 @@ struct InGameHUDOverlayView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
-        .background(Color.black.opacity(0.78))
+        .background(Color.black.opacity(0.82))
         .clipShape(Capsule())
         .overlay(
             Capsule()
                 .stroke(Color.cyan.opacity(0.35), lineWidth: 1)
         )
         .padding(4)
+    }
+
+    private var statusColor: Color {
+        if !controller.isTrackingActive {
+            return .orange
+        }
+        if !controller.isInAppGameBrowserActive && !controller.isAccessibilityGranted {
+            return .red
+        }
+        return .green
+    }
+
+    private var statusText: String {
+        if !controller.isTrackingActive {
+            return "PAUSED (Press ⌥Space)"
+        }
+        if !controller.isInAppGameBrowserActive && !controller.isAccessibilityGranted {
+            return "NEEDS ACCESSIBILITY PERMISSION"
+        }
+        return "ORIENT LIVE"
     }
 }

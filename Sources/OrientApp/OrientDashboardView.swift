@@ -39,6 +39,11 @@ public struct OrientDashboardView: View {
                     .pickerStyle(.segmented)
                     .padding(.horizontal, 16)
                     .padding(.top, 12)
+                    .onChange(of: selectedTab) { _, newTab in
+                        if newTab != 0 {
+                            controller.isInAppGameBrowserActive = false
+                        }
+                    }
 
                     Group {
                         switch selectedTab {
@@ -74,7 +79,7 @@ public struct OrientDashboardView: View {
                         .foregroundStyle(.cyan)
                     Text("ORIENT")
                         .font(.system(size: 19, weight: .black, design: .rounded))
-                    Text("PHASE 2 • 3D 6-DOF DISAMBIGUATION & CURSOR LAB")
+                    Text("PHASE 3 • LIVE 3D FPS GAME & PUBG SUITE")
                         .font(.system(size: 11, weight: .bold, design: .monospaced))
                         .padding(.horizontal, 7)
                         .padding(.vertical, 2)
@@ -115,7 +120,7 @@ public struct OrientDashboardView: View {
                 Button {
                     controller.requestAccessibilityPermission()
                 } label: {
-                    Label("Grant Accessibility (For Clicks)", systemImage: "exclamationmark.shield.fill")
+                    Label("Fix / Grant Accessibility", systemImage: "exclamationmark.shield.fill")
                         .font(.caption.bold())
                 }
                 .buttonStyle(.borderedProminent)

@@ -65,3 +65,4 @@ struct Phase3GameIntegrationTests {
         #expect(cmd2.shouldResetTouchDragAnchor == true)
     }
 }
+

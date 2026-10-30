@@ -10,6 +10,11 @@ public final class SystemCursorInjector: @unchecked Sendable {
     private var activeLeanState: TacticalLeanState = .upright
     private var isTouchDragging: Bool = false
 
+    // Sub-pixel residual accumulators (macOS kCGMouseEventDeltaX/Y are int64 fields;
+    // without residual accumulation, sub-pixel 120Hz deltas < 1.0px truncate to 0!)
+    private var residualDeltaX: Double = 0.0
+    private var residualDeltaY: Double = 0.0
+
     // macOS Virtual KeyCodes
     private let keyCodeQ: CGKeyCode = 12
     private let keyCodeE: CGKeyCode = 14
@@ -17,7 +22,9 @@ public final class SystemCursorInjector: @unchecked Sendable {
     private let keyCodeR: CGKeyCode = 15
 
     public init() {
-        self.eventSource = CGEventSource(stateID: .hidSystemState)
+        let src = CGEventSource(stateID: .hidSystemState)
+        src?.localEventsSuppressionInterval = 0.0
+        self.eventSource = src
     }
 
     public static func isAccessibilityTrusted(promptIfNeeded: Bool = false) -> Bool {
@@ -27,6 +34,22 @@ public final class SystemCursorInjector: @unchecked Sendable {
             return AXIsProcessTrustedWithOptions(options)
         }
         return AXIsProcessTrusted()
+    }
+
+    /// Resets any stale ad-hoc CDHash entry in macOS TCC and triggers a fresh Accessibility prompt.
+    public static func resetStaleTCCAndPromptAccessibility() -> Bool {
+        if AXIsProcessTrusted() {
+            return true
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+        process.arguments = ["reset", "Accessibility", "com.orient.cursorlab"]
+        try? process.run()
+        process.waitUntilExit()
+
+        let promptKey = "AXTrustedCheckOptionPrompt" as CFString
+        let options = [promptKey: true] as CFDictionary
+        return AXIsProcessTrustedWithOptions(options)
     }
 
     public func currentCursorPosition() -> Point2D {
@@ -51,14 +74,28 @@ public final class SystemCursorInjector: @unchecked Sendable {
         return Rect2D(minX: 0, minY: 0, maxX: 1920, maxY: 1080)
     }
 
-    /// Moves the macOS cursor and sets hardware deltaX/deltaY fields for 3D Pointer-Lock FPS games.
+    /// Moves the macOS cursor and sets integer hardware deltaX/deltaY fields for 3D Pointer-Lock FPS games.
     public func moveCursor(
         to target: Point2D,
         deltaX: Double,
         deltaY: Double,
         injectionProtocol: GameInjectionProtocol = .pointerLockRawDelta,
-        shouldResetTouchDragAnchor: Bool = false
+        shouldResetTouchDragAnchor: Bool = false,
+        lockCursorInPlaceFor3DGame: Bool = false
     ) {
+        residualDeltaX += deltaX
+        residualDeltaY += deltaY
+
+        let intDX = Int64(residualDeltaX.rounded(.towardZero))
+        let intDY = Int64(residualDeltaY.rounded(.towardZero))
+
+        if intDX == 0 && intDY == 0 && !shouldResetTouchDragAnchor {
+            return
+        }
+
+        residualDeltaX -= Double(intDX)
+        residualDeltaY -= Double(intDY)
+
         let bounds = currentScreenBounds()
         let anchorCenter = Point2D(
             x: (bounds.minX + bounds.maxX) * 0.65,
@@ -87,8 +124,8 @@ public final class SystemCursorInjector: @unchecked Sendable {
                 }
             }
             if let drag = CGEvent(mouseEventSource: eventSource, mouseType: .leftMouseDragged, mouseCursorPosition: cgPoint, mouseButton: .left) {
-                drag.setDoubleValueField(.mouseEventDeltaX, value: deltaX)
-                drag.setDoubleValueField(.mouseEventDeltaY, value: deltaY)
+                drag.setIntegerValueField(.mouseEventDeltaX, value: intDX)
+                drag.setIntegerValueField(.mouseEventDeltaY, value: intDY)
                 drag.post(tap: .cghidEventTap)
             }
             return
@@ -98,18 +135,44 @@ public final class SystemCursorInjector: @unchecked Sendable {
             releaseTouchDragIfNeeded()
         }
 
-        let cgPoint = CGPoint(x: target.x, y: target.y)
+        // Preserve physical mouse button state so aiming while firing (Left-Click) or ADS scoping (Right-Click) works seamlessly
+        let isLeftDown = CGEventSource.buttonState(.combinedSessionState, button: .left)
+        let isRightDown = CGEventSource.buttonState(.combinedSessionState, button: .right)
+
+        let eventType: CGEventType
+        let mouseButton: CGMouseButton
+        if isLeftDown {
+            eventType = .leftMouseDragged
+            mouseButton = .left
+        } else if isRightDown {
+            eventType = .rightMouseDragged
+            mouseButton = .right
+        } else {
+            eventType = .mouseMoved
+            mouseButton = .left
+        }
+
+        // In 3D Game Pointer-Lock mode, keep cursor position inside the active game window
+        // so turning 360° never drags the cursor onto the macOS Dock, Menu Bar, or Browser URL bar.
+        let cursorPt: CGPoint
+        if lockCursorInPlaceFor3DGame {
+            let cur = currentCursorPosition()
+            cursorPt = CGPoint(x: cur.x, y: cur.y)
+        } else {
+            cursorPt = CGPoint(x: target.x, y: target.y)
+        }
+
         if let moveEvent = CGEvent(
             mouseEventSource: eventSource,
-            mouseType: .mouseMoved,
-            mouseCursorPosition: cgPoint,
-            mouseButton: .left
+            mouseType: eventType,
+            mouseCursorPosition: cursorPt,
+            mouseButton: mouseButton
         ) {
-            moveEvent.setDoubleValueField(.mouseEventDeltaX, value: deltaX)
-            moveEvent.setDoubleValueField(.mouseEventDeltaY, value: deltaY)
+            moveEvent.setIntegerValueField(.mouseEventDeltaX, value: intDX)
+            moveEvent.setIntegerValueField(.mouseEventDeltaY, value: intDY)
             moveEvent.post(tap: .cghidEventTap)
-        } else {
-            CGWarpMouseCursorPosition(cgPoint)
+        } else if !lockCursorInPlaceFor3DGame {
+            CGWarpMouseCursorPosition(cursorPt)
         }
     }
 
@@ -153,6 +216,8 @@ public final class SystemCursorInjector: @unchecked Sendable {
     public func releaseAllHeldKeys() {
         updateTacticalLeanKeys(to: .upright)
         releaseTouchDragIfNeeded()
+        residualDeltaX = 0
+        residualDeltaY = 0
     }
 
     public func performClick(action: GestureAction, at position: Point2D) {
